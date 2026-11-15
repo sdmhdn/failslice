@@ -51,16 +51,15 @@ Package layout (`src/failslice/`):
 | `mcp_server.py` | MCP server (`failslice-mcp`) |
 | `api.py` / `__init__.py` | Small public API |
 
-Planned public API (names may be refined in Phase 2, docstrings required):
+Public API (implemented in Phase 2; `export_pytest` and `explain` follow in Phase 3):
 
 ```python
 project = failslice.load_project("failslice.yaml")
-report  = failslice.check(project)                       # CheckReport
-result  = failslice.reduce(project, seed=0, budget=failslice.Budget(...),
-                           minimality=True, isolate=False, on_progress=None)  # ReductionResult
-vrep    = failslice.verify(result.run_dir)               # VerificationReport
-failslice.export_pytest(result.run_dir, polarity="fails")  # or "passes" (after a fix)
-expl    = failslice.explain(result.run_dir)
+project = project.with_settings(seed=1, max_evals=2000)  # budgets and seed live in settings
+report = failslice.check(project)  # CheckReport: tables, FK orphans, determinism
+result = failslice.reduce(project, isolate=True, on_progress=print)  # ReductionResult
+result.minimality_label  # "1-minimal (verified)" or "reduced, minimality not verified"
+vrep = failslice.verify(result.run_dir)  # VerificationReport (fresh process)
 ```
 
 ## 3. Configuration
