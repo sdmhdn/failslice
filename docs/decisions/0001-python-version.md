@@ -15,7 +15,7 @@ Checked on 2026-11-15 (PyPI JSON API):
 
 ## Decision
 
-`requires-python = ">=3.11"`. CI covers 3.11 through 3.14.
+`requires-python = ">=3.11"`. CI (added in Phase 6) will cover 3.11 through 3.14.
 
 ## Consequences
 

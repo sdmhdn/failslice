@@ -1,6 +1,6 @@
 """FailSlice: shrink multi-table data to a small, FK-consistent, verified reproducer.
 
-The public API is defined in later phases; see ``docs/design.md``.
+Pre-alpha: the public API is designed in Phase 1 (``docs/design.md``, to be written).
 """
 
 __version__ = "0.0.1.dev0"
