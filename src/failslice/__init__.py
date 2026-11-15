@@ -16,7 +16,14 @@ __version__ = "0.0.1.dev0"
 
 from failslice.api import CheckReport, ReductionResult, check, reduce, validate_predicate, verify
 from failslice.config import ConfigError, Project, load_project
-from failslice.reducer import Budget, DeterminismError, Minimality, ProgressEvent, StopReason
+from failslice.reducer import (
+    Budget,
+    DeterminismError,
+    Minimality,
+    PredicateNotFailingError,
+    ProgressEvent,
+    StopReason,
+)
 from failslice.safety import PredicateValidationError
 from failslice.verify import VerificationReport
 
@@ -26,6 +33,7 @@ __all__ = [
     "ConfigError",
     "DeterminismError",
     "Minimality",
+    "PredicateNotFailingError",
     "PredicateValidationError",
     "ProgressEvent",
     "Project",

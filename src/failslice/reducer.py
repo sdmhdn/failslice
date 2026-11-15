@@ -20,6 +20,7 @@ __all__ = [
     "Budget",
     "DeterminismError",
     "Minimality",
+    "PredicateNotFailingError",
     "ProgressEvent",
     "Reducer",
     "ReductionStats",
@@ -62,11 +63,16 @@ class _BudgetExhaustedError(Exception):
 
 
 class DeterminismError(RuntimeError):
-    """The predicate is not TRUE, or not stable, on the full data."""
+    """The predicate is not stable on the full data (or, see subclass, not TRUE)."""
 
     def __init__(self, message: str, outcomes: list[Outcome]) -> None:
         super().__init__(message)
         self.outcomes = outcomes
+
+
+class PredicateNotFailingError(DeterminismError):
+    """The predicate was never TRUE on the full data: there is nothing to reduce.
+    Never bypassed by ``allow_nondeterministic``."""
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,7 @@ class Reducer:
         on_progress: Callable[[ProgressEvent], None] | None = None,
         before_eval: Callable[[], None] | None = None,
         on_accept: Callable[[Engine], None] | None = None,
+        on_confirmed: Callable[[Engine], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.engine = engine
@@ -146,6 +153,7 @@ class Reducer:
         self.on_progress = on_progress
         self.before_eval = before_eval
         self.on_accept = on_accept
+        self.on_confirmed = on_confirmed
         self.clock = clock
         self._start = clock()
         self.stats = ReductionStats(sizes_before=engine.sizes)
@@ -185,10 +193,10 @@ class Reducer:
 
     def _attempt(self, candidate: Candidate, *, use_cache: bool = True) -> AttemptResult:
         self._check_budget()
-        if self.before_eval is not None:
-            self.before_eval()
         hits_before = self.engine.cache_hits
-        result = self.engine.attempt(candidate, use_cache=use_cache)
+        # before_eval fires inside the engine, after the cache lookup, so it counts
+        # real predicate executions only.
+        result = self.engine.attempt(candidate, use_cache=use_cache, before_eval=self.before_eval)
         if self.engine.cache_hits == hits_before:
             self._record(result.outcome)
         if result.accepted:
@@ -215,8 +223,8 @@ class Reducer:
             outcomes.append(out)
             self._emit(None, False)
         self.stats.determinism_signatures = [o.signature for o in outcomes]
-        if not outcomes[0].is_true:
-            raise DeterminismError(
+        if not any(o.is_true for o in outcomes):
+            raise PredicateNotFailingError(
                 f"the predicate is {outcomes[0].kind.value} on the full data "
                 f"({outcomes[0].detail or outcomes[0].signature}); nothing to reduce",
                 outcomes,
@@ -229,8 +237,13 @@ class Reducer:
                 + ", ".join(f"{o.kind.value}[{o.signature[:40]}]" for o in outcomes),
                 outcomes,
             )
-        self.stats.confirmed = True
+        self._confirm()
         return outcomes
+
+    def _confirm(self) -> None:
+        self.stats.confirmed = True
+        if self.on_confirmed is not None:
+            self.on_confirmed(self.engine)
 
     def run(self, *, check_determinism: bool = True, certify: bool = True) -> ReductionStats:
         """Reduce to a fixed point (or budget stop), then optionally certify."""
@@ -238,12 +251,16 @@ class Reducer:
             if check_determinism:
                 try:
                     self.check_determinism()
+                except PredicateNotFailingError:
+                    raise
                 except DeterminismError:
                     if not self.engine.project.settings.allow_nondeterministic:
                         raise
+                    # The full data was observed TRUE at least once; reduce, but never
+                    # claim minimality for an unstable predicate.
                     certify = False
-                    self.stats.confirmed = False
                     self.stats.minimality_detail = "nondeterministic predicate allowed"
+                    self._confirm()
             self._phase = "reduce"
             self._sweeps()
             if certify:

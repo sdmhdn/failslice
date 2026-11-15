@@ -59,7 +59,7 @@ def test_boolean_form_exception_is_error(con: duckdb.DuckDBPyConnection) -> None
     assert out.signature.startswith("error:ConversionException:")
 
 
-def test_error_surfacing_during_fetch_is_caught(con: duckdb.DuckDBPyConnection) -> None:
+def test_aggregate_conversion_error_is_error(con: duckdb.DuckDBPyConnection) -> None:
     out = run_sql(con, "SELECT bool_and(CAST(s AS INTEGER) > 0) FROM t")
     assert out.kind is OutcomeKind.ERROR
 

@@ -274,22 +274,30 @@ def test_verify_subprocess_timeout(project_factory: Callable[..., Project], tmp_
     assert rep.status == "unverified"
 
 
+# Self-consistent expectation: joined revenue minus line revenue must be 0. Unlike
+# comparing a bare sum to a constant, emptying the tables does not "differ" (0 - 0 = 0),
+# so the reduction must keep the duplicated order that causes the fan-out.
+FANOUT_DIFF_QUERY = (
+    "SELECT coalesce((SELECT sum(l.amount) FROM lines l JOIN orders o USING (order_id)), 0)"
+    " - coalesce((SELECT sum(amount) FROM lines), 0)"
+)
+
+
 @pytest.mark.parametrize("form", ["inline", "file"])
 def test_expect_predicate_end_to_end(
     project_factory: Callable[..., Project], tmp_path: Path, form: str
 ) -> None:
-    query = "SELECT sum(l.amount) FROM lines l JOIN orders o USING (order_id)"
     tables = fanout_tables()
-    # The correct revenue is the sum over lines; the duplicated order inflates the join.
-    correct = sum(r[2] for r in tables["lines"][1])
     if form == "inline":
-        pred = {"expect": {"query": query, "expected": correct}}
+        pred = {"expect": {"query": FANOUT_DIFF_QUERY, "expected": 0.0}}
         p = project_factory(tables, fks=FANOUT_FKS, predicate=pred)
     else:
         p0 = project_factory(
-            tables, fks=FANOUT_FKS, predicate={"expect": {"query": query, "expected": 0}}
+            tables,
+            fks=FANOUT_FKS,
+            predicate={"expect": {"query": FANOUT_DIFF_QUERY, "expected": 0}},
         )
-        write_table(p0.base_dir / "expected.csv", [("total", "DOUBLE")], [(correct,)])
+        write_table(p0.base_dir / "expected.csv", [("diff", "DOUBLE")], [(0.0,)])
         text = (
             (p0.base_dir / "failslice.yaml")
             .read_text()
@@ -299,12 +307,38 @@ def test_expect_predicate_end_to_end(
         p = failslice.load_project(p0.base_dir / "failslice.yaml")
     res = failslice.reduce(p, out_dir=tmp_path / "run")
     assert res.verification is not None and res.verification.ok, res.verification
-    # With the inflated sum differing from the correct total, any rows of the
-    # duplicated order's lines keep the failure; the result is small.
-    assert res.stats is not None and res.stats.output_rows <= 4
+    assert res.stats is not None
+    assert res.stats.sizes_after == {"customers": 1, "orders": 2, "lines": 1}
+    assert res.minimality_label == "1-minimal (verified)"
     if form == "file":
-        assert (res.run_dir / "expected" / "expected.csv").is_file()
+        assert (res.run_dir / "expected" / "expected.parquet").is_file()
     assert verify_run_dir(res.run_dir).ok  # same replay, in-process (for coverage)
+
+
+def test_expectation_snapshot_is_what_gets_exported(
+    project_factory: Callable[..., Project], tmp_path: Path
+) -> None:
+    p0 = project_factory(
+        fanout_tables(),
+        fks=FANOUT_FKS,
+        predicate={"expect": {"query": FANOUT_DIFF_QUERY, "expected": 0}},
+    )
+    exp = p0.base_dir / "expected.csv"
+    write_table(exp, [("diff", "DOUBLE")], [(0.0,)])
+    cfg = p0.base_dir / "failslice.yaml"
+    cfg.write_text(cfg.read_text().replace("expected: 0", "expected_file: expected.csv"))
+    p = failslice.load_project(cfg)
+    out = tmp_path / "run"
+    e = Engine(p, allowed_directories=[out])
+    try:
+        sha = e.expected_sha256
+        write_table(exp, [("diff", "DOUBLE")], [(5.0,)])  # changed after loading
+        e.reset_state({"customers": [7], "orders": [7, 120], "lines": [7]})
+        e.export(out)
+    finally:
+        e.close()
+    assert sha is not None and e.input_identity()["expected"] == sha
+    assert verify_run_dir(out).ok  # replays against the snapshot (0.0), not the new file
 
 
 def test_raises_predicate_end_to_end(

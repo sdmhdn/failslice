@@ -178,6 +178,10 @@ unqualified name. Three forms:
   `float_tolerance`. A scalar expectation requires a 1×1 result.
 - **TIMEOUT** overrides all forms. Only TRUE counts as "still failing". ERROR outcomes
   are counted per error class so slippage (a different failure) is visible in the report.
+- Caveat for `mode: differs`: the reducer looks for *any* configuration whose result
+  differs, and an emptied table usually differs too (`sum` becomes NULL). Prefer
+  self-consistent queries whose correct value does not depend on the amount of data, e.g.
+  `coalesce(joined_total, 0) - coalesce(line_total, 0)` expected `0`.
 - Every outcome carries a **signature**: the boolean, a hash of the canonical result, or
   `(error class, message)`.
 
@@ -199,7 +203,8 @@ Two matching runs are a screen, not proof; the independent replay is the real ch
 - Reducer state stays inside DuckDB: `cur_<t>(rid, pos)` with the seeded order; a candidate
   is described by excluded position ranges; cascade repair runs as SQL into `cand_<t>` in
   topological order. No base data is copied per evaluation. Candidates run in a
-  transaction that is rolled back on rejection; the connection is rebuilt if rollback fails.
+  transaction that is rolled back on rejection; if the connection is unusable after a rollback, the run stops
+  (`EngineBrokenError`) and an isolated run recovers its last checkpoint.
 - Measured on DuckDB 2.0 (200k + 800k rows, join+aggregate predicate, 8 ms on raw tables):
   pushing Python id lists per evaluation cost 430 ms at 500k ids; the in-DuckDB range
   approach cost 110-180 ms at full scale and ~7 ms on tiny sets. Phase 2 re-measures this
@@ -224,18 +229,25 @@ Two matching runs are a screen, not proof; the independent replay is the real ch
 
 ## 10. Budgets, supervisor and timeouts (ADR 0005)
 
-- Budgets: `max_evals`, `wall_clock_s`, `eval_timeout_s`. The wall-clock budget covers the
-  whole run including export and replay; time is reserved for those stages.
+- Budgets: `max_evals` (predicate executions; cache hits are free), `wall_clock_s`,
+  `eval_timeout_s`. The wall-clock budget covers the whole run including export and replay:
+  the reduction gets `wall_clock_s` minus a reserve, and replay gets whatever time remains
+  (none left ⇒ "unverified"). In isolated runs the total is bounded by `wall_clock_s` plus
+  fixed grace periods (kill, recovery).
 - Per-evaluation timeout is **cooperative**: a watchdog calls `con.interrupt()`; DuckDB stops
   at its next interruption check. The watchdog is joined before the connection is reused.
 - **Run supervisor:** CLI and MCP (and `reduce(isolate=True)`) run the reduction in a child
-  process. The parent grants evaluation tokens (so counts stay exact even if the child dies),
-  receives progress events, and kills the child if the wall clock is exceeded or one
-  evaluation runs past `eval_timeout_s + grace`.
+  process. The child announces every predicate execution over a pipe with a synchronous
+  send *before* it starts (so the parent's count stays exact even if the child dies); the
+  parent closes its write end of the pipe, so a child dying mid-message yields EOF, never a
+  blocked read. The parent kills the child when the deadline passes or one evaluation runs
+  past `eval_timeout_s + grace`.
 - **Checkpoints:** written atomically (temp + rename) after the full data passes `check`
   (initial checkpoint) and after every acceptance: kept ids per table, run id, input
-  identity. If the child is killed, the parent reloads the original files (hashes must
-  match, same row ids), exports the checkpoint and replays it under the remaining deadline.
+  identity (hashes of all table files and of the expectation file). If the child is killed,
+  a separate, equally supervised recovery process reloads the original files (hashes must
+  match, same row ids), exports the checkpoint, and the parent replays it under the
+  remaining deadline.
   Killed before the initial checkpoint ⇒ "no confirmed candidate". If replay cannot finish
   in time ⇒ "unverified candidate".
 - The library default is in-process (`isolate=False`) with cooperative timeouts, as documented.
@@ -263,9 +275,10 @@ Run directory `.failslice/runs/<run-id>/`:
 - `orphans.parquet`: the input-orphan exemptions that survive in the output, as
   `(fk edge, child table, output row index, original __fs_rid)`; replay needs only this file
   and `rowmap.parquet`, never the original data
-- `expected/`: a snapshot of any expectation file used by an `expect:` predicate (hash in
-  the manifest); the expectation is read once at config time, so editing the original file
-  during a run cannot change the oracle
+- `expected/expected.parquet`: the snapshot of an expectation file used by an `expect:`
+  predicate, written from the copy loaded once when the engine starts (its hash is part
+  of the input identity), so editing the original file during a run cannot change the
+  oracle or the replay
 - `manifest.json`: input/output hashes, row counts before/after, predicate, config, engine
   versions, seed, evaluation counts by outcome, elapsed time, stop reason, verification
   status, `minimality: "verified" | "not verified"`

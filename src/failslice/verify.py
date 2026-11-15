@@ -91,6 +91,10 @@ def verify_run_dir(run_dir: str | Path) -> VerificationReport:
         if isinstance(predicate, ExpectPredicate):
             if spec.get("expected_file"):
                 exp_path = (root / spec["expected_file"]).resolve()
+                if not exp_path.is_relative_to(root):
+                    raise ValueError(
+                        f"expectation file outside the run directory: {spec['expected_file']}"
+                    )
                 reader = (
                     "read_parquet"
                     if exp_path.suffix.lower() in {".parquet", ".pq"}
@@ -113,12 +117,18 @@ def verify_run_dir(run_dir: str | Path) -> VerificationReport:
         violations: dict[str, int] = {}
         for i, text in enumerate(spec["foreign_keys"]):
             fk = ForeignKey.parse(text)
+            # Project only the FK column into a scratch table: its row-id pseudo column
+            # is then the output row index, even if the user's table has a "rowid" column.
+            con.execute(
+                f"CREATE TABLE __fs_ix AS SELECT {_q(fk.child_column)} AS v FROM {_q(fk.child)}"
+            )
             row = con.execute(
-                f"SELECT count(*) FROM (SELECT rowid AS ri, {_q(fk.child_column)} AS v "
-                f"FROM {_q(fk.child)}) c WHERE c.v IS NOT NULL AND NOT EXISTS "
+                f"SELECT count(*) FROM (SELECT rowid AS ri, v FROM __fs_ix) c "
+                f"WHERE c.v IS NOT NULL AND NOT EXISTS "
                 f"(SELECT 1 FROM {_q(fk.parent)} p WHERE p.{_q(fk.parent_column)} = c.v) "
                 f"AND c.ri NOT IN (SELECT row_index FROM __fs_exempt WHERE edge = {i})"
             ).fetchone()
+            con.execute("DROP TABLE __fs_ix")
             n = int(row[0]) if row else 0
             if n:
                 violations[text] = n

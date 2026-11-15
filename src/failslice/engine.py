@@ -20,8 +20,7 @@ import contextlib
 import hashlib
 import json
 import random
-import shutil
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -100,6 +99,11 @@ class AttemptResult:
 Fingerprint = tuple[int, int, int]
 
 
+class EngineBrokenError(RuntimeError):
+    """The DuckDB connection is unusable after a rollback; the run must stop (an
+    isolated run then recovers its last checkpoint)."""
+
+
 class Engine:
     """Holds the loaded data and the current configuration for one run."""
 
@@ -119,6 +123,7 @@ class Engine:
         self._cache: dict[str, Outcome] = {}
         self.cache_hits = 0
         self.expected_file: Path | None = None
+        self.expected_sha256: str | None = None
         try:
             self._load()
             self.expected_rows = self._load_expected(expected_rows)
@@ -161,9 +166,23 @@ class Engine:
                         f"table {name!r}: column {col!r} uses the reserved prefix "
                         f"{RESERVED_PREFIX!r}"
                     )
+            # A user column named "rowid" shadows DuckDB's row-id pseudo column, so it is
+            # renamed while the row ids are taken, then renamed back.
+            user_rowid = [c for c, _ in columns if c.lower() == "rowid"]
+            if user_rowid:
+                tmp = f"__fs_state.{q('stage2_' + name)}"
+                con.execute(
+                    f"CREATE TABLE {tmp} AS SELECT * RENAME ({q(user_rowid[0])} AS "
+                    f"__fs_user_rowid) FROM {stage}"
+                )
+                con.execute(f"DROP TABLE {stage}")
+                stage = tmp
+                star = f"* RENAME (__fs_user_rowid AS {q(user_rowid[0])})"
+            else:
+                star = "*"
             con.execute(
                 f"CREATE TABLE __fs_base.{q(name)} AS "
-                f"SELECT rowid::BIGINT AS __fs_rid, * FROM {stage} ORDER BY rowid"
+                f"SELECT rowid::BIGINT AS __fs_rid, {star} FROM {stage} ORDER BY __fs_rid"
             )
             con.execute(f"DROP TABLE {stage}")
             (count,) = self._one(f"SELECT count(*) FROM __fs_base.{q(name)}")
@@ -207,7 +226,13 @@ class Engine:
             return None
         path = resolve_inside(self.project.base_dir, spec.expected_file, self.project.root)
         self.expected_file = path
-        return load_rows_file(self.con, path)
+        self.expected_sha256 = file_sha256(path)
+        reader = "read_parquet" if path.suffix.lower() in {".parquet", ".pq"} else "read_csv"
+        # Snapshot once: this table is what is evaluated and exported (never re-read).
+        self.con.execute(
+            f"CREATE TABLE __fs_meta.expected AS SELECT * FROM {reader}({_lit(str(path))})"
+        )
+        return [tuple(r) for r in self.con.execute("SELECT * FROM __fs_meta.expected").fetchall()]
 
     def _compute_orphans(self) -> None:
         con = self.con
@@ -319,6 +344,13 @@ class Engine:
         )
         return int(n), int(s), int(x)
 
+    def input_identity(self) -> dict[str, str]:
+        """Hashes of every input file (tables and expectation file), for checkpoints."""
+        ident = {f"table:{n}": t.source_sha256 for n, t in self.tables.items()}
+        if self.expected_sha256 is not None:
+            ident["expected"] = self.expected_sha256
+        return ident
+
     @property
     def sizes(self) -> dict[str, int]:
         """Current kept-row count per table."""
@@ -374,7 +406,13 @@ class Engine:
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
-    def attempt(self, candidate: Candidate, *, use_cache: bool = True) -> AttemptResult:
+    def attempt(
+        self,
+        candidate: Candidate,
+        *,
+        use_cache: bool = True,
+        before_eval: Callable[[], None] | None = None,
+    ) -> AttemptResult:
         """Evaluate ``G(K \\ D)`` for the candidate's deletion set ``D`` and commit it
         iff the predicate is TRUE. Non-TRUE outcomes are cached (search hints only)."""
         target = candidate.table
@@ -401,6 +439,8 @@ class Engine:
             for name in changed:
                 con.execute(self._view_sql(name, self._cand(name)))
             self._set_search_path("__fs_view")
+            if before_eval is not None:
+                before_eval()
             outcome = self.runner.run(con, self.project.settings.eval_timeout_s)
             if not outcome.is_true:
                 if outcome.kind is not OutcomeKind.TIMEOUT:
@@ -441,6 +481,10 @@ class Engine:
         with contextlib.suppress(duckdb.Error):
             self.con.execute("ROLLBACK")
         self._reset_connection_state()
+        try:
+            self.con.execute("SELECT 1").fetchall()
+        except duckdb.Error as exc:  # pragma: no cover - DuckDB left in a broken state
+            raise EngineBrokenError(f"connection unusable after rollback: {exc}") from exc
 
     def _build_candidate(self, cand: Candidate) -> list[str]:
         """Create ``cand_<t>`` tables for every table whose kept set changes."""
@@ -528,11 +572,12 @@ class Engine:
         )
         expected_file = None
         if self.expected_file is not None:
-            src = self.expected_file
             (out_dir / "expected").mkdir(exist_ok=True)
-            dest = out_dir / "expected" / src.name
-            shutil.copyfile(src, dest)
-            expected_file = f"expected/{src.name}"
+            dest = out_dir / "expected" / "expected.parquet"
+            con.execute(
+                f"COPY (SELECT * FROM __fs_meta.expected) TO {_lit(str(dest))} (FORMAT parquet)"
+            )
+            expected_file = "expected/expected.parquet"
         spec = {
             "format": 1,
             "failslice_version": __version__,
@@ -561,9 +606,3 @@ class Engine:
     def close(self) -> None:
         """Close the DuckDB connection."""
         self.con.close()
-
-
-def load_rows_file(con: duckdb.DuckDBPyConnection, path: Path) -> list[Row]:
-    """Read an expectation file (CSV or Parquet) into rows."""
-    reader = "read_parquet" if path.suffix.lower() in {".parquet", ".pq"} else "read_csv"
-    return [tuple(r) for r in con.execute(f"SELECT * FROM {reader}({_lit(str(path))})").fetchall()]

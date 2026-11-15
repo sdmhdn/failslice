@@ -157,15 +157,27 @@ def results_equal(
             )
         except TypeError:  # pragma: no cover - unhashable values fall back to matching
             pass
-    remaining = list(expected)
-    for row in actual:
-        for i, cand in enumerate(remaining):
-            if _rows_equal(row, cand, tol):
-                del remaining[i]
-                break
-        else:
-            return False
-    return True
+    return _perfect_matching(actual, expected, tol)
+
+
+def _perfect_matching(actual: Sequence[Row], expected: Sequence[Row], tol: float | None) -> bool:
+    """Whether every actual row can be paired with a distinct, equal expected row
+    (bipartite matching, Kuhn's algorithm). Order-independent, unlike greedy matching."""
+    match_of_expected: list[int | None] = [None] * len(expected)
+    edges = [[j for j, e in enumerate(expected) if _rows_equal(a, e, tol)] for a in actual]
+
+    def augment(i: int, seen: set[int]) -> bool:
+        for j in edges[i]:
+            if j in seen:
+                continue
+            seen.add(j)
+            current = match_of_expected[j]
+            if current is None or augment(current, seen):
+                match_of_expected[j] = i
+                return True
+        return False
+
+    return all(augment(i, set()) for i in range(len(actual)))
 
 
 def _canonical_key(row: Row) -> tuple[Any, ...]:
@@ -194,8 +206,11 @@ class PredicateRunner:
                     raise ValueError("expected_rows must be given for expected_file predicates")
                 expected_rows = normalize_expected(spec.expected)
             self.expected: list[Row] | None = list(expected_rows)
+            # An inline scalar expectation demands a 1x1 result (ADR 0003).
+            self.scalar = spec.expected is not None and not isinstance(spec.expected, list)
         else:
             self.expected = None
+            self.scalar = False
 
     @property
     def query(self) -> str:
@@ -256,6 +271,10 @@ class PredicateRunner:
                 return Outcome(OutcomeKind.FALSE, "bool:null", "NULL counts as FALSE")
             return Outcome(OutcomeKind.FALSE, "bool:false")
         assert self.expected is not None
+        if self.scalar and (len(types) != 1 or len(rows) != 1):
+            return _shape_error(
+                f"a scalar expectation needs a 1x1 result, got {len(rows)}x{len(types)}"
+            )
         sig = rows_signature(rows, ordered=spec.ordered)
         equal = results_equal(rows, self.expected, ordered=spec.ordered, tol=spec.float_tolerance)
         present = (not equal) if spec.mode == "differs" else equal

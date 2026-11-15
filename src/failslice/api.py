@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,7 @@ from failslice.reducer import (
     Budget,
     DeterminismError,
     Minimality,
+    PredicateNotFailingError,
     ProgressEvent,
     Reducer,
     ReductionStats,
@@ -128,6 +130,7 @@ def reduce(
     """
     validate_predicate(project)
     settings = project.settings
+    deadline = time.monotonic() + settings.wall_clock_s  # covers reduction, export, replay
     run_dir, run_id = _new_run_dir(project, out_dir)
     reserve = max(MIN_REPLAY_S, 0.1 * settings.wall_clock_s)
     budget = Budget(
@@ -137,15 +140,31 @@ def reduce(
     notes: list[str] = []
     stats: ReductionStats | None
     if isolate:
-        sup = run_supervised(project, run_dir, run_id, budget, on_progress=on_progress)
+        sup = run_supervised(
+            project,
+            run_dir,
+            run_id,
+            budget,
+            deadline=deadline - MIN_REPLAY_S,
+            on_progress=on_progress,
+        )
         stats = _supervised_stats(sup, notes)
     else:
         stats = _reduce_in_process(project, run_dir, run_id, budget, on_progress)
+        if stats is not None and not stats.confirmed:
+            notes.append("stopped before any configuration was confirmed TRUE")
+            stats = None
     if stats is None:
         result = ReductionResult(run_dir, "no-candidate", None, None, notes)
         _write_result(result)
         return result
-    verification = verify_in_subprocess(run_dir, timeout_s=max(MIN_REPLAY_S, reserve))
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        verification = VerificationReport(
+            "unverified", detail="no time left for the independent replay (wall_clock_s)"
+        )
+    else:
+        verification = verify_in_subprocess(run_dir, timeout_s=remaining)
     result = ReductionResult(run_dir, "reduced", stats, verification, notes)
     _write_result(result)
     return result
@@ -153,6 +172,8 @@ def reduce(
 
 def _supervised_stats(sup: SupervisedOutcome, notes: list[str]) -> ReductionStats | None:
     if sup.determinism_error is not None:
+        if sup.predicate_not_failing:
+            raise PredicateNotFailingError(sup.determinism_error, [])
         raise DeterminismError(sup.determinism_error, [])
     if sup.killed_reason:
         notes.append(sup.killed_reason)
@@ -181,7 +202,8 @@ def _reduce_in_process(
             on_accept=lambda eng: write_checkpoint(eng, run_dir, run_id),
         )
         stats = reducer.run(certify=project.settings.minimality)
-        engine.export(run_dir)
+        if stats.confirmed:  # never export a configuration not observed TRUE
+            engine.export(run_dir)
         return stats
     finally:
         engine.close()
