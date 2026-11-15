@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use FailSlice in your work, please cite it as below."
+title: "FailSlice: a failure-preserving, FK-consistent data reducer"
+type: software
+authors:
+  - family-names: Mahdian
+    given-names: Saeed
+    email: saeed.mahdian@gmail.com
+license: MIT
+version: 0.0.1.dev0
+date-released: "2026-11-15"
+keywords:
+  - delta debugging
+  - test case reduction
+  - DuckDB
+  - data quality
+  - MCP
