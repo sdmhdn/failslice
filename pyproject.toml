@@ -30,6 +30,11 @@ classifiers = [
 # Runtime dependencies are chosen in Phase 1/2 (see docs/decisions/).
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/sdmhdn/failslice"
+Issues = "https://github.com/sdmhdn/failslice/issues"
+Changelog = "https://github.com/sdmhdn/failslice/blob/main/CHANGELOG.md"
+
 [dependency-groups]
 dev = [
     "pytest>=9.2",

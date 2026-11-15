@@ -3,8 +3,8 @@
 Target behaviour (pre-alpha, being built in phases): FailSlice reduces multi-table CSV/Parquet data (loaded into DuckDB) to a small,
 FK-consistent subset that still makes a failure predicate TRUE, verifies it in a fresh
 process, and exports artifacts (Parquet/CSV, manifest, report, pytest). CLI `failslice`,
-MCP server `failslice-mcp`. The full brief lives outside the repo
-(`../failslice_prompt.md`); this file is the short version.
+MCP server `failslice-mcp`. The full brief is
+`docs/failslice_prompt.md`; this file is the short version.
 
 ## Workflow
 
@@ -48,6 +48,5 @@ MCP server `failslice-mcp`. The full brief lives outside the repo
 
 ## Author
 
-Saeed Mahdian <saeed.mahdian@gmail.com> (LICENSE, pyproject authors/maintainers,
-CITATION.cff, README "Author" section, repo-local git identity). Do not guess a GitHub
-username; ask first.
+Saeed Mahdian <saeed.mahdian@gmail.com>, GitHub `sdmhdn`; the repo will be public (LICENSE, pyproject authors/maintainers,
+CITATION.cff, README "Author" section, repo-local git identity).

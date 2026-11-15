@@ -21,4 +21,5 @@ MIT, see [LICENSE](LICENSE).
 
 ## Author
 
-Created and maintained by Saeed Mahdian (<saeed.mahdian@gmail.com>).
+Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
+<saeed.mahdian@gmail.com>).
