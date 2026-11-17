@@ -653,6 +653,8 @@ def _inside(root: Path, relative: str) -> Path:
     path = (root / relative).resolve()
     if not path.is_relative_to(root) or any(ch in str(path) for ch in "*?[]{}"):
         raise ValueError(f"bundle file outside the bundle or not a literal path: {relative}")
+    if not path.is_file():  # regular files only: a FIFO or device would block reads
+        raise ValueError(f"bundle file is missing or not a regular file: {relative}")
     return path
 
 

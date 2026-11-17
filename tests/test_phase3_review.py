@@ -406,3 +406,18 @@ def test_default_names_differ_by_foreign_keys(
         res = failslice.reduce(p, out_dir=tmp_path / f"r{i}")
         names |= {f.name for f in (res.run_dir / "pytest").glob("test_*.py")}
     assert len(names) == 2
+
+
+def test_fifo_fixtures_are_refused(run: failslice.ReductionResult, tmp_path: Path) -> None:
+    from failslice.pytest_export import ExportError
+
+    bundle = run.run_dir / "pytest"
+    target = bundle / "fixtures" / "tables" / "lines.parquet"
+    target.unlink()
+    os.mkfifo(target)
+    with pytest.raises(ValueError, match="not a regular file"):
+        portable.run_bundle(bundle)
+    (run.run_dir / "tables" / "lines.parquet").unlink()
+    os.mkfifo(run.run_dir / "tables" / "lines.parquet")
+    with pytest.raises(ExportError, match="not a regular file"):
+        build_bundle(run.run_dir, tmp_path / "b")

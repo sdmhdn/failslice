@@ -191,7 +191,7 @@ def build_bundle(
             rel = f"fixtures/tables/{tname}.parquet"
             if not (stage / rel).resolve().is_relative_to(stage.resolve()):  # pragma: no cover
                 raise ExportError(f"invalid table name {tname!r}")  # RunSpec validates names
-            shutil.copyfile(spec.resolve(root, entry.file), stage / rel)
+            shutil.copyfile(_regular(spec.resolve(root, entry.file)), stage / rel)
             fixtures[rel] = portable._sha256(stage / rel)
             tables.append(
                 {
@@ -202,7 +202,9 @@ def build_bundle(
                 }
             )
             _check_deadline(deadline)
-        shutil.copyfile(spec.resolve(root, spec.orphans_file), stage / "fixtures/orphans.parquet")
+        shutil.copyfile(
+            _regular(spec.resolve(root, spec.orphans_file)), stage / "fixtures/orphans.parquet"
+        )
         fixtures["fixtures/orphans.parquet"] = portable._sha256(stage / "fixtures/orphans.parquet")
         fks = []
         for text in spec.foreign_keys:
@@ -267,6 +269,13 @@ def build_bundle(
 def test_file_name(directory: Path, name: str) -> Path:
     """Path of a bundle's test module."""
     return directory / f"test_{name}.py"
+
+
+def _regular(path: Path) -> Path:
+    """Only regular files are copied (a FIFO or device in a tampered run would block)."""
+    if not path.is_file():
+        raise ExportError(f"{path} is missing or not a regular file")
+    return path
 
 
 def _check_deadline(deadline: float | None) -> None:
