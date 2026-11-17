@@ -350,6 +350,22 @@ class DeadlineConnection:
         """``con.executemany`` under the deadline."""
         return self._run(self.con.executemany, sql, params)
 
+    def fetchall(self, sql: str, params: Any = None) -> list[Any]:
+        """Execute and fetch every row, both under the deadline."""
+        rows: list[Any] = []
+
+        def run() -> duckdb.DuckDBPyConnection:
+            rows.extend(self.con.execute(sql, params).fetchall())
+            return self.con
+
+        self._run(run)
+        return rows
+
+    def fetchone(self, sql: str, params: Any = None) -> Any:
+        """Execute and fetch the first row, both under the deadline."""
+        rows = self.fetchall(sql, params)
+        return rows[0] if rows else None
+
 
 # ---------------------------------------------------------------------------- classification
 
@@ -577,7 +593,7 @@ def exemption_problem(
 
 
 def count_violations(
-    con: duckdb.DuckDBPyConnection | DeadlineConnection,
+    con: DeadlineConnection,
     fks: Sequence[ForeignKeyRef],
     exempt: Sequence[tuple[int, int]],
 ) -> dict[str, int]:
@@ -594,13 +610,13 @@ def count_violations(
             # then the row index, even if the user's table has a "rowid" column.
             con.execute(f"CREATE TEMP TABLE __fs_ix AS SELECT {_q(col)} AS v FROM {_q(child)}")
             try:
-                row = con.execute(
+                row = con.fetchone(
                     "SELECT count(*) FROM (SELECT rowid AS ri, v FROM __fs_ix) c "
                     "WHERE c.v IS NOT NULL AND NOT EXISTS "
                     f"(SELECT 1 FROM {_q(parent)} p WHERE p.{_q(pcol)} = c.v) "
                     "AND NOT EXISTS (SELECT 1 FROM __fs_exempt x "
                     f"WHERE x.edge = {i} AND x.row_index = c.ri)"
-                ).fetchone()
+                )
             finally:
                 con.execute("DROP TABLE __fs_ix")
             n = int(row[0]) if row else 0
@@ -677,22 +693,19 @@ def run_bundle(
         for i, table in enumerate(spec["tables"]):
             source = f"read_parquet({_lit(str(_inside(root, table['file'])))})"
             con.execute(f"CREATE TABLE __fs_raw.t{i} AS SELECT * FROM {source}")
-        exempt_rows = con.execute(
+        exempt_rows = con.fetchall(
             f"SELECT edge, row_index FROM read_parquet({_lit(str(_inside(root, spec['orphans'])))})"
-        ).fetchall()
+        )
         con.execute("SET enable_external_access = false")
         for i, table in enumerate(spec["tables"]):
             exprs = ", ".join(table["select"])
             con.execute(f"CREATE TABLE {_q(table['name'])} AS SELECT {exprs} FROM __fs_raw.t{i}")
         con.execute("DROP SCHEMA __fs_raw CASCADE")
         for table in spec["tables"]:
-            got = [
-                [str(r[0]), str(r[1])]
-                for r in con.execute(f"DESCRIBE {_q(table['name'])}").fetchall()
-            ]
+            got = [[str(r[0]), str(r[1])] for r in con.fetchall(f"DESCRIBE {_q(table['name'])}")]
             if got != [list(c) for c in table["columns"]]:
                 result.problems.append(f"schema of {table['name']!r} differs: {got}")
-            row = con.execute(f"SELECT count(*) FROM {_q(table['name'])}").fetchone()
+            row = con.fetchone(f"SELECT count(*) FROM {_q(table['name'])}")
             counts[table["name"]] = int(row[0]) if row else 0
         if result.problems:
             return result

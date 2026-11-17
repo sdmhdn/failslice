@@ -107,7 +107,9 @@ def _check_name(name: str) -> None:
         raise ExportError(f"test name {name!r} must match [a-z_][a-z0-9_]*")
 
 
-def _predicate_entry(spec: RunSpec, run_dir: Path) -> dict[str, object]:
+def _predicate_entry(
+    spec: RunSpec, run_dir: Path, deadline: float | None = None
+) -> dict[str, object]:
     pred = spec.predicate
     if isinstance(pred, SqlPredicate):
         return {"form": "sql"}
@@ -120,17 +122,18 @@ def _predicate_entry(spec: RunSpec, run_dir: Path) -> dict[str, object]:
         }
     assert isinstance(pred, ExpectPredicate)
     if spec.expected_file:
-        con = duckdb.connect(":memory:")
+        raw = duckdb.connect(":memory:")
         try:
             path = spec.resolve(run_dir, spec.expected_file)
+            con = portable.DeadlineConnection(raw, deadline)
             rows = [
                 tuple(r)
-                for r in con.execute(
+                for r in con.fetchall(
                     "SELECT * FROM read_parquet(" + portable._lit(str(path)) + ")"
-                ).fetchall()
+                )
             ]
         finally:
-            con.close()
+            raw.close()
     else:
         rows = normalize_expected(yaml.safe_load(spec.expected_yaml or "null"))
     check = check_for(pred, rows)
@@ -207,16 +210,10 @@ def build_bundle(
             fks.append([*child.split(".", 1), *parent.split(".", 1)])
         pred = spec.predicate
         query = pred.sql if isinstance(pred, SqlPredicate) else pred.query
-        predicate_entry = _predicate_entry(spec, root)
-        if name is None:  # distinct per data, predicate and polarity
-            digest = json.dumps(
-                [sorted(fixtures.items()), query, predicate_entry, expect], sort_keys=True
-            ).encode()
-            name = "reproducer_" + hashlib.sha256(digest).hexdigest()[:12]
-        reproducer = {
+        predicate_entry = _predicate_entry(spec, root, deadline)
+        reproducer: dict[str, object] = {
             "format": portable.BUNDLE_FORMAT,
             "portable_version": portable.PORTABLE_VERSION,
-            "name": name,
             "failslice_version": spec.failslice_version,
             "duckdb_version": spec.duckdb_version,
             "threads": spec.settings.threads,
@@ -227,9 +224,10 @@ def build_bundle(
             "predicate": predicate_entry,
             "fixtures": fixtures,
         }
-        query = (
-            spec.predicate.sql if isinstance(spec.predicate, SqlPredicate) else spec.predicate.query
-        )
+        if name is None:  # distinct per complete bundle contract, query and polarity
+            digest = json.dumps([reproducer, query, expect], sort_keys=True).encode()
+            name = "reproducer_" + hashlib.sha256(digest).hexdigest()[:12]
+        reproducer["name"] = name
         (stage / "query.sql").write_text(query.rstrip("\n") + "\n", encoding="utf-8")
         (stage / "reproducer.json").write_text(
             json.dumps(reproducer, indent=2, sort_keys=True) + "\n", encoding="utf-8"

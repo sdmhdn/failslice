@@ -378,3 +378,31 @@ def test_json_error_is_never_null_on_failure(
         cli_main(["reduce", "-c", str(project.base_dir / "failslice.yaml"), "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert exc.value.code == 4 and doc["error"]["message"] == "crash: IOException: bad parquet"
+
+
+def test_fetch_runs_under_the_deadline() -> None:
+    raw = duckdb.connect()
+    con = portable.DeadlineConnection(raw, time.monotonic() + 0.2)
+    assert con.fetchone("SELECT 42") == (42,)
+    assert con.fetchall("SELECT 1 WHERE false") == []
+    assert con.fetchone("SELECT 1 WHERE false") is None
+    with pytest.raises(TimeoutError):
+        con.fetchall("SELECT count(*) FROM range(10000000000)")
+
+
+def test_default_names_differ_by_foreign_keys(
+    project_factory: Callable[..., Project], tmp_path: Path
+) -> None:
+    names = set()
+    for i, parent_col in enumerate(("k1", "k2")):
+        p = project_factory(
+            {
+                "p": ([("k1", "BIGINT"), ("k2", "BIGINT")], [(1, 1)]),
+                "c": ([("fk", "BIGINT")], [(1,)]),
+            },
+            fks=[f"c.fk -> p.{parent_col}"],
+            predicate={"sql": "SELECT count(*) > 0 FROM c"},
+        )
+        res = failslice.reduce(p, out_dir=tmp_path / f"r{i}")
+        names |= {f.name for f in (res.run_dir / "pytest").glob("test_*.py")}
+    assert len(names) == 2

@@ -157,7 +157,7 @@ def explain(run_dir: str | Path, *, limit: int = 20, deadline: float | None = No
 
 
 def _one(con: DeadlineConnection, sql: str) -> tuple[int, ...]:
-    row = con.execute(sql).fetchone()
+    row = con.fetchone(sql)
     assert row is not None
     return tuple(int(v or 0) for v in row)
 
@@ -218,10 +218,10 @@ def _foreign_key(
         f"GROUP BY {pc}) pp ON pp.key = k.key"
     )
     (pairs, n_keys) = _one(con, f"SELECT coalesce(sum(pairs), 0), count(*) FROM ({per_key})")
-    rows = con.execute(
+    rows = con.fetchall(
         f"SELECT CAST(key AS VARCHAR), children, parents, pairs FROM ({per_key}) "
         f"ORDER BY pairs DESC, children DESC, CAST(key AS VARCHAR) LIMIT {int(limit)}"
-    ).fetchall()
+    )
     keys = tuple(
         KeyObservation(key=str(k), children=int(ch), parents=int(pa), pairs=int(pr))
         for k, ch, pa, pr in rows

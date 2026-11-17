@@ -21,7 +21,7 @@ import duckdb
 import yaml
 
 from failslice.config import ExpectPredicate, ForeignKey, SqlPredicate
-from failslice.portable import count_violations, exemption_problem
+from failslice.portable import DeadlineConnection, count_violations, exemption_problem
 from failslice.predicate import PredicateRunner, Row, normalize_expected
 from failslice.runspec import RunSpec, RunSpecError, restoring_select
 from failslice.safety import validate_predicate_sql
@@ -146,7 +146,7 @@ def _replay(root: Path) -> VerificationReport:
         problem = exemption_problem(pairs, fks, counts)
         if problem:
             return VerificationReport("integrity-failed", detail=problem, row_counts=counts)
-        violations = count_violations(con, fks, pairs)
+        violations = count_violations(DeadlineConnection(con, None), fks, pairs)
         con.execute("DROP SCHEMA __fs_raw")
         runner = PredicateRunner(predicate, expected)
         outcome = runner.run(con, float(spec.settings.eval_timeout_s))

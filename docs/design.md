@@ -308,7 +308,11 @@ reduction budget), the replay, then the finalizer (`artifacts.finalize`), which 
 the pytest bundle, `explain.json`, `report.md` and, atomically and last, `manifest.json`.
 The finalizer shares the replay reserve: each step checks the deadline first and runs its
 DuckDB work under the watchdog; a skipped or failed step is recorded in the manifest
-(`steps`). After the deadline only the report and the manifest are written.
+(`steps`). After the deadline only the report and the manifest are written. Every SQL
+statement and its fetch run under a watchdog re-armed with the time left
+(`portable.DeadlineConnection`); Python-side work between statements (file copies, hashing,
+inserting exemptions) is not interruptible, but it is bounded by the size of the reduced
+data, so the overrun past the deadline is bounded, not zero.
 
 - `spec.json`: the typed, versioned contract of the run directory (`RunSpec`, format 3,
   ADR 0008/0009): tables with exported and source schemas and declared primary keys, FKs,
