@@ -22,6 +22,7 @@ from failslice.inference import (
     render_config,
     suggest_relationships,
 )
+from tests.conftest import posix_only
 
 
 def _write(path: Path, query: str) -> Path:
@@ -105,6 +106,7 @@ def test_glob_characters_are_refused(tmp_path: Path, character: str) -> None:
         suggest_relationships({"bad": path}, root=tmp_path, base_dir=tmp_path)
 
 
+@posix_only
 def test_glob_directory_and_glob_named_symlink_are_refused(tmp_path: Path) -> None:
     path = _write(tmp_path / "glob[dir]" / "data.parquet", "SELECT 1 AS id")
     with pytest.raises(ConfigError, match="glob character"):

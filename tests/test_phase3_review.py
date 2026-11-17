@@ -21,7 +21,7 @@ from failslice.config import ConfigError, Project
 from failslice.explain import explain
 from failslice.pytest_export import build_bundle
 from failslice.runspec import RunSpec, RunSpecError
-from tests.conftest import FANOUT_FKS, FANOUT_PREDICATE, fanout_tables
+from tests.conftest import FANOUT_FKS, FANOUT_PREDICATE, fanout_tables, posix_only
 
 
 @pytest.fixture
@@ -408,6 +408,7 @@ def test_default_names_differ_by_foreign_keys(
     assert len(names) == 2
 
 
+@posix_only
 def test_fifo_fixtures_are_refused(run: failslice.ReductionResult, tmp_path: Path) -> None:
     from failslice.pytest_export import ExportError
 
@@ -423,6 +424,7 @@ def test_fifo_fixtures_are_refused(run: failslice.ReductionResult, tmp_path: Pat
         build_bundle(run.run_dir, tmp_path / "b")
 
 
+@posix_only
 def test_replay_refuses_fifo_files(run: failslice.ReductionResult) -> None:
     from failslice.verify import verify_run_dir
 

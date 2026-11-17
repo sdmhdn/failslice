@@ -4,6 +4,8 @@
 keep foreign keys intact, prove it with an independent replay, and get a ready-to-run
 pytest regression test.**
 
+[![CI](https://github.com/sdmhdn/failslice/actions/workflows/ci.yml/badge.svg)](https://github.com/sdmhdn/failslice/actions/workflows/ci.yml)
+
 [English](#english) · [فارسی](#فارسی) · [Documentation](docs/index.md)
 
 > **Status: pre-alpha.** The engine, the `failslice` command line, the run report and

@@ -27,7 +27,7 @@ from failslice.runspec import RunSpec
 from failslice.safety import PredicateValidationError, validate_predicate_sql
 from failslice.supervisor import _pump, read_checkpoint, run_supervised
 from failslice.verify import verify_run_dir
-from tests.conftest import FANOUT_FKS, FANOUT_PREDICATE, fanout_tables
+from tests.conftest import FANOUT_FKS, FANOUT_PREDICATE, fanout_tables, posix_only
 
 
 # Finding 1: numbers compare exactly (no float rounding), nested values are typed.
@@ -80,6 +80,7 @@ def test_big_integer_expectation_keeps_the_right_row(
 
 
 # Finding 2: DuckDB readers expand globs, so glob characters in paths are refused.
+@posix_only
 def test_glob_paths_are_refused(tmp_path: Path) -> None:
     safe = tmp_path / "safe"
     outside = tmp_path / "outside"

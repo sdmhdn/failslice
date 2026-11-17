@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -82,3 +83,10 @@ FANOUT_PREDICATE = {
     "sql": "SELECT (SELECT sum(l.amount) FROM lines l JOIN orders o USING (order_id)) "
     "<> (SELECT sum(amount) FROM lines)"
 }
+
+
+# Windows cannot create file names containing "*" or "?" and has no FIFOs; the behaviour
+# these tests protect (refusing such paths) is platform-independent code.
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="needs POSIX file names (*, ?) or FIFOs"
+)

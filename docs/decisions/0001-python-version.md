@@ -15,7 +15,9 @@ Checked on 2026-11-15 (PyPI JSON API):
 
 ## Decision
 
-`requires-python = ">=3.11"`. CI (added in Phase 6) will cover 3.11 through 3.14.
+`requires-python = ">=3.11"`. CI (`.github/workflows/ci.yml`, added after Phase 3) runs the
+full suite on Linux, macOS and Windows for Python 3.11 through 3.14 (`duckdb` ships a cp311
+wheel and a cp312 abi3 wheel that covers 3.12+).
 
 ## Consequences
 
