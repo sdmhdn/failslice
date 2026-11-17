@@ -40,3 +40,24 @@ def test_quickstart_run_script(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert "check ok: True" in proc.stdout
     assert "reduced | 1-minimal (verified) | verified" in proc.stdout
+
+
+def test_quickstart_cli(tmp_path: Path) -> None:
+    # The README's command-line quickstart and the output line it shows.
+    work = tmp_path / "quickstart"
+    shutil.copytree(EXAMPLE, work, ignore=shutil.ignore_patterns("generated", ".failslice"))
+    subprocess.run([sys.executable, "make_data.py"], cwd=work, check=True)
+    cli = [sys.executable, "-m", "failslice.cli"]
+    check = subprocess.run([*cli, "check"], cwd=work, capture_output=True, text=True, check=False)
+    assert check.returncode == 0, check.stderr
+    proc = subprocess.run([*cli, "reduce"], cwd=work, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert "1-minimal (verified): 26,001 -> 4 rows (0.02%); replay verified" in proc.stdout
+    (run_dir,) = (work / ".failslice" / "runs").iterdir()
+    tests = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(run_dir / "pytest")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert tests.returncode == 0, tests.stdout

@@ -27,13 +27,17 @@ classifiers = [
     "Topic :: Software Development :: Testing",
     "Typing :: Typed",
 ]
-# Runtime dependencies are chosen in Phase 1/2 (see docs/decisions/).
+# Runtime dependencies: see docs/decisions/0006-interfaces-and-dependencies.md.
 dependencies = [
     "duckdb>=2.0",
     "pydantic>=2.14",
     "pyyaml>=6.0.3",
     "sqlglot>=30.31",
+    "typer>=0.29.1",
 ]
+
+[project.scripts]
+failslice = "failslice.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/sdmhdn/failslice"

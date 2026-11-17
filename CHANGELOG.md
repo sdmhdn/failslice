@@ -5,6 +5,13 @@ has no releases yet.
 
 ## Unreleased
 
+- Phase 3: `failslice` CLI (`init`, `check`, `reduce`, `verify`, `export-test`, `explain`)
+  with a documented exit-code contract and `--json` (ADR 0010); `manifest.json` (replaces
+  `result.json`), `report.md`, CSV copies, `explain` observations, PK/FK suggestions for
+  `init`, and a self-contained pytest bundle that shares `failslice/portable.py` with the
+  tool (ADR 0009); `check(isolate=True)`; `spec.json` format 3.
+- Persian user guide `docs/guide-fa.md`.
+
 - Core engine (Phase 2): config, loading, predicate outcomes, cascade ddmin, negative
   cache, budgets, supervisor with checkpoints and recovery, independent replay.
 - Independent audit fixes: exact typed result comparison, glob-safe paths, typed

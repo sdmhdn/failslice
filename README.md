@@ -5,10 +5,9 @@ keep foreign keys intact, and prove it with an independent replay.**
 
 [English](#english) · [فارسی](#فارسی)
 
-> **Status: pre-alpha.** The core engine works today through the Python API (load, check,
-> reduce, export, replay). The command-line tool, the MCP server for AI agents, and the
-> manifest / report / generated pytest artifacts are being built next (see
-> [Roadmap](#roadmap)). Not published on PyPI yet; install from source.
+> **Status: pre-alpha.** The engine, the `failslice` command line, the run report and
+> manifest, and the generated pytest regression test work today. The MCP server for AI
+> agents is next (see [Roadmap](#roadmap)). Not published on PyPI yet; install from source.
 
 <a id="english"></a>
 
@@ -25,7 +24,8 @@ FailSlice takes:
 - a **failure predicate**: a DuckDB SQL query that says "the bug is present",
 
 and returns a much smaller set of rows for which the predicate is still TRUE, with no
-new dangling references, written to a run directory and replayed in a fresh process.
+new dangling references, replayed in a fresh process, plus a report and a **ready-to-run
+pytest regression test** that needs only `pytest` and `duckdb`.
 
 For the bundled [quickstart example](examples/quickstart/) (a duplicated order that
 inflates joined revenue) the result is:
@@ -49,6 +49,7 @@ flowchart LR
     RED --> CERT[certification:<br/>every single-row deletion is FALSE?]
     CERT --> EXP[export run directory<br/>spec.json + Parquet]
     EXP --> VER[replay in a fresh process<br/>from the exported files only]
+    VER --> ART[report.md, manifest.json,<br/>CSV, pytest bundle]
 ```
 
 1. **Load.** Every table is loaded into an in-memory DuckDB database. Each input file is
@@ -66,6 +67,8 @@ flowchart LR
 5. **Export and replay.** The kept rows are written as Parquet plus a typed `spec.json`;
    a new Python process rebuilds the database from those files alone, checks the foreign
    keys and runs the predicate again.
+6. **Artifacts.** A Markdown report, a `manifest.json` with hashes of every file, CSV
+   copies, observations on the surviving rows, and (for a verified replay) a pytest bundle.
 
 The ideas are established ones (delta debugging, database subsetting); FailSlice combines
 them for predicate-guided, multi-table, FK-consistent row reduction on local files.
@@ -80,10 +83,28 @@ cd failslice
 uv sync
 cd examples/quickstart
 uv run python make_data.py      # writes data/generated/*.csv
-uv run python run.py
+uv run failslice check          # predicate TRUE on the full data, deterministic?
+uv run failslice reduce
 ```
 
-`failslice.yaml`:
+`failslice reduce` prints (run id and paths will differ):
+
+```text
+1-minimal (verified): 26,001 -> 4 rows (0.02%); replay verified
+run directory: .../examples/quickstart/.failslice/runs/<run-id>
+  report: .../report.md
+  test:   pytest .../pytest
+```
+
+Then:
+
+```bash
+uv run failslice explain .failslice/runs/<run-id>    # what is special about the survivors
+uv run pytest .failslice/runs/<run-id>/pytest        # the generated regression test
+uv run failslice export-test .failslice/runs/<run-id> --out tests/data_bug_4242
+```
+
+The config, `failslice.yaml`:
 
 ```yaml
 version: 1
@@ -102,7 +123,13 @@ predicate:
 settings: { seed: 0, max_evals: 5000, wall_clock_s: 300 }
 ```
 
-`run.py`:
+For your own data, `failslice init path/to/folder` writes a starting `failslice.yaml`
+with every table and with primary/foreign key **suggestions** inferred from the data,
+commented out for you to review. You then write the predicate.
+
+### From Python
+
+The same loop is available as a library ([`examples/quickstart/run.py`](examples/quickstart/run.py)):
 
 ```python
 import failslice
@@ -124,8 +151,9 @@ if __name__ == "__main__":  # required: isolate=True starts a child process
     main()
 ```
 
-`isolate=True` runs the reduction in a supervised child process with hard deadlines;
-like any `multiprocessing` code it needs the `if __name__ == "__main__":` guard.
+`isolate=True` runs the reduction in a supervised child process with hard deadlines
+(the CLI does this by default); like any `multiprocessing` code it needs the
+`if __name__ == "__main__":` guard.
 
 ## Writing the predicate
 
@@ -187,21 +215,58 @@ Tips:
 
 ## What you get
 
-Each run writes a directory (default `.failslice/runs/<run-id>/`):
+Each run writes a directory (default `.failslice/runs/<run-id>/` next to the config):
 
 | file | content |
 |---|---|
-| `tables/<t>.parquet` | the kept rows, in original order |
-| `spec.json` | typed, versioned description of the reproducer: schemas, FKs, predicate, input file hashes, replay settings |
+| `report.md` | human-readable summary: result, rows before/after, predicate, observations, search statistics |
+| `manifest.json` | the authoritative summary: versions, settings, input hashes, per-table counts and schemas, statistics, verification, and every file with its size and sha256 |
+| `tables/<t>.parquet` | the kept rows, in original order (source of truth) |
+| `csv/<t>.csv` | convenience copy (header, `\N` for NULL, text quoted; types are not preserved) |
+| `pytest/` | the generated regression test (written only after a verified replay) |
+| `explain.json` | observations on the surviving rows (see `failslice explain`) |
+| `spec.json` | typed, versioned description of the reproducer that replay reads |
 | `rowmap.parquet` | output row -> original row number in the input file |
 | `orphans.parquet` | input orphans that survive (allowed dangling references) |
 | `expected/expected.parquet` | snapshot of the expectation file, if one is used |
-| `result.json` | status, minimality label, statistics, replay result |
 | `checkpoint.json` | last confirmed configuration (used to recover a killed run) |
 
-The public API: `load_project`, `check`, `reduce`, `verify` (replay an existing run
-directory), `validate_predicate`, plus the result types `CheckReport`, `ReductionResult`
-and `VerificationReport`.
+### The generated test
+
+`pytest/` (or any directory you pick with `failslice export-test --out`) contains
+`test_<name>.py`, `query.sql`, `reproducer.json`, `fixtures/` and
+`_failslice_portable.py`, an exact copy of the module FailSlice itself uses to classify
+outcomes. It needs only `pytest` and `duckdb`, never reads your original data, and
+checks the fixture hashes, the schemas and referential integrity before running the
+predicate.
+
+- `--expect fails` (default): the test passes while the bug reproduces.
+- `--expect passes`: the test passes once the bug is gone. After fixing your pipeline,
+  put the fixed SQL into `query.sql`; the fixture data stays a snapshot.
+- Any other outcome (an unrelated error, a malformed result, a timeout) fails the test
+  under either polarity.
+
+### Command line
+
+| command | does |
+|---|---|
+| `failslice init [DIR]` | scaffold `failslice.yaml` with key suggestions (never overwrites) |
+| `failslice check` | validate config and predicate, count FK orphans, determinism check |
+| `failslice reduce` | reduce, export, replay, write report / manifest / CSV / pytest bundle |
+| `failslice verify RUN_DIR` | replay a run directory in a fresh process |
+| `failslice export-test RUN_DIR --out DIR` | re-verify and write a pytest bundle |
+| `failslice explain RUN_DIR` | observations on the surviving rows |
+
+`check` and `reduce` run in a supervised child process by default (`--no-isolate` to
+run in-process). Every command takes `--json` (exactly one JSON document on stdout).
+Exit codes: `0` success, `1` a check or replay requirement failed, `2` invalid usage,
+config or predicate, `3` inconclusive (budget or deadline), `4` operational error,
+`130` interrupted. `reduce` accepts `--seed`, `--max-evals`, `--wall-clock`,
+`--eval-timeout`, `--no-minimality` and `--out`.
+
+The public Python API: `load_project`, `check`, `reduce`, `verify`, `validate_predicate`,
+plus the result types `CheckReport`, `ReductionResult` (with `.manifest` and `.spec`) and
+`VerificationReport`.
 
 ## Guarantees and limits
 
@@ -215,9 +280,13 @@ What FailSlice guarantees (each point is enforced in code and covered by tests):
 - **Independent replay.** The result is replayed in a fresh process from the exported
   files alone. `verified` means: predicate TRUE and integrity holds there.
 - **Honest labels.** The result is called `1-minimal (verified)` only when the
-  certification pass completed and every single-row deletion was FALSE; otherwise it is
-  "reduced". FailSlice never claims a globally smallest result and never claims to find
-  the root cause.
+  certification pass completed and every single-row deletion was FALSE, the replay is
+  verified and the export was lossless; otherwise it is "reduced". FailSlice never claims
+  a globally smallest result and never claims to find the root cause; `explain` reports
+  observations, not causes. Key inference in `init` produces suggestions only.
+- **A portable, honest test.** The generated test classifies outcomes with a byte-identical
+  copy of FailSlice's own code, checks fixture hashes and referential integrity, and passes
+  only on the exact expected outcome.
 - **Determinism.** The same inputs, settings and seed give the same result (for runs not
   stopped by time).
 - **Sandboxed predicates.** Only a single `SELECT` over the configured tables is
@@ -229,14 +298,14 @@ Current limits:
 
 - Single-column foreign keys only; no cycles (including self-references).
 - All data is loaded into memory (in-process DuckDB).
-- Without `isolate=True`, timeouts are cooperative: they interrupt the SQL query, but
-  not Python-side work such as a slow regular expression.
+- In-process (library default, or `--no-isolate`), timeouts are cooperative: they
+  interrupt the SQL query, but not Python-side work such as a slow regular expression.
 - The predicate must be deterministic; nondeterministic ones are refused by default.
 
 ## Roadmap
 
-- **Phase 3:** CSV export, manifest, Markdown report, generated pytest regression test,
-  `failslice` CLI (`init`, `check`, `reduce`, `verify`, `export-test`, `explain`).
+- **Phase 3 (done):** manifest, report, CSV, generated pytest regression test, `explain`,
+  `init` with key suggestions, and the `failslice` CLI.
 - **Phase 4:** MCP server `failslice-mcp`, so AI agents can run the same loop.
 - **Phase 5:** examples and generated benchmarks.
 - **Phase 6:** polish and first release.
@@ -278,7 +347,7 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 
 **فیل‌اسلایس (FailSlice) یک مجموعه‌دادهٔ چندجدولی را تا چند ردیفی کوچک می‌کند که هنوز باگ داده را نشان می‌دهند، کلیدهای خارجی را سالم نگه می‌دارد و نتیجه را با اجرای مستقل دوباره تأیید می‌کند.**
 
-> وضعیت: پیش‌آلفا. هستهٔ اصلی امروز از طریق API پایتون کار می‌کند (بارگذاری، بررسی، کوچک‌سازی، خروجی و اجرای مجدد). ابزار خط فرمان، سرور MCP برای عامل‌های هوش مصنوعی و خروجی‌های گزارش و تست pytest مراحل بعدی هستند. هنوز روی PyPI منتشر نشده و باید از سورس نصب شود.
+> وضعیت: پیش‌آلفا. موتور اصلی، ابزار خط فرمان `failslice`، گزارش و مانیفست اجرا و تست رگرسیون pytest تولیدی امروز کار می‌کنند. سرور MCP برای عامل‌های هوش مصنوعی مرحلهٔ بعد است. هنوز روی PyPI منتشر نشده و باید از سورس نصب شود.
 
 ### چه کاری انجام می‌دهد؟
 
@@ -290,7 +359,7 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 - کلیدهای خارجی بین جدول‌ها
 - یک **گزارهٔ خطا** (failure predicate): کوئری SQL در DuckDB که می‌گوید «باگ وجود دارد»
 
-و خروجی آن مجموعهٔ بسیار کوچک‌تری از ردیف‌هاست که گزاره روی آن هنوز TRUE است، هیچ ارجاع معلق تازه‌ای ندارد، در یک پوشهٔ اجرا ذخیره می‌شود و در یک پردازهٔ تازه دوباره اجرا و تأیید می‌شود.
+و خروجی آن مجموعهٔ بسیار کوچک‌تری از ردیف‌هاست که گزاره روی آن هنوز TRUE است، هیچ ارجاع معلق تازه‌ای ندارد و در یک پردازهٔ تازه دوباره اجرا و تأیید می‌شود؛ همراه با یک گزارش و یک **تست رگرسیون pytest آماده** که فقط به `pytest` و `duckdb` نیاز دارد.
 
 برای نمونهٔ همراه پروژه (پوشهٔ `examples/quickstart`، یک سفارش تکراری که جمع درآمد را در join زیاد نشان می‌دهد) نتیجه چنین است:
 
@@ -307,6 +376,7 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 3. **کوچک‌سازی:** جست‌وجوی delta debugging (ddmin) بازه‌هایی از ردیف‌ها را جدول‌به‌جدول و از والدها به فرزندها حذف می‌کند. با حذف یک ردیف والد، ردیف‌های فرزندی که والدشان را از دست می‌دهند هم حذف می‌شوند؛ بنابراین هر پیکربندی‌ای که گزاره می‌بیند از نظر ارجاعی سالم است. یک پیکربندی فقط وقتی پذیرفته می‌شود که گزاره همان لحظه روی آن TRUE شده باشد.
 4. **گواهی‌دادن** (اختیاری و به‌طور پیش‌فرض فعال): حذف تک‌تک ردیف‌های باقی‌مانده امتحان می‌شود. فقط اگر حذف هر کدام گزاره را FALSE کند، نتیجه برچسب `1-minimal (verified)` می‌گیرد.
 5. **خروجی و اجرای مجدد:** ردیف‌های نگه‌داشته‌شده به‌صورت Parquet همراه با یک فایل `spec.json` نوع‌دار نوشته می‌شوند. یک پردازهٔ پایتون تازه پایگاه داده را فقط از همین فایل‌ها می‌سازد، کلیدهای خارجی را بررسی می‌کند و گزاره را دوباره اجرا می‌کند.
+6. **محصولات نهایی:** گزارش Markdown، فایل `manifest.json` با هش همهٔ فایل‌ها، نسخهٔ CSV جدول‌ها، مشاهده‌ها دربارهٔ ردیف‌های باقی‌مانده و (اگر اجرای مجدد تأیید شده باشد) بستهٔ تست pytest.
 
 ایده‌ها تازه نیستند (delta debugging و زیرمجموعه‌سازی پایگاه داده)؛ فیل‌اسلایس آن‌ها را برای کوچک‌سازی چندجدولی، هدایت‌شده با گزاره و سازگار با کلید خارجی روی فایل‌های محلی کنار هم می‌گذارد.
 
@@ -317,9 +387,14 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 1. مخزن را کلون کنید: `git clone https://github.com/sdmhdn/failslice.git`
 2. در پوشهٔ پروژه وابستگی‌ها را نصب کنید: `uv sync`
 3. به پوشهٔ `examples/quickstart` بروید و داده را بسازید: `uv run python make_data.py`
-4. نمونه را اجرا کنید: `uv run python run.py`
+4. گزاره را بررسی کنید: `uv run failslice check`
+5. کوچک‌سازی را اجرا کنید: `uv run failslice reduce`
+6. مشاهده‌ها دربارهٔ ردیف‌های باقی‌مانده: `uv run failslice explain <پوشهٔ اجرا>`
+7. اجرای تست تولیدی: `uv run pytest <پوشهٔ اجرا>/pytest`
 
-متن کامل فایل پیکربندی `failslice.yaml` و اسکریپت `run.py` در بخش انگلیسی بالا آمده است. نکته: با `isolate=True` کوچک‌سازی در یک پردازهٔ فرزند با مهلت سخت اجرا می‌شود، پس مثل هر کد `multiprocessing` به محافظ `if __name__ == "__main__":` نیاز دارد.
+خروجی دستور `reduce` در این نمونه این است: `1-minimal (verified): 26,001 -> 4 rows (0.02%); replay verified`.
+
+برای دادهٔ خودتان، دستور `failslice init <پوشهٔ داده>` یک فایل `failslice.yaml` اولیه می‌سازد که همهٔ جدول‌ها را دارد و کلیدهای اصلی و خارجی را فقط به‌صورت **پیشنهاد** و کامنت‌شده می‌نویسد تا خودتان بررسی کنید؛ بعد گزاره را می‌نویسید. متن کامل فایل پیکربندی و نمونهٔ استفاده از پایتون در بخش انگلیسی بالا و در راهنمای فارسی آمده است.
 
 ### نوشتن گزاره
 
@@ -338,15 +413,35 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 
 ### خروجی‌ها
 
-هر اجرا یک پوشه می‌سازد (به‌طور پیش‌فرض `.failslice/runs/<run-id>/`) که این فایل‌ها را دارد:
+هر اجرا یک پوشه می‌سازد (به‌طور پیش‌فرض `.failslice/runs/<run-id>/` کنار فایل پیکربندی) که این فایل‌ها را دارد:
 
-- پوشهٔ `tables/`: ردیف‌های نگه‌داشته‌شدهٔ هر جدول به‌صورت Parquet، به ترتیب اصلی
-- فایل `spec.json`: توصیف نوع‌دار و نسخه‌دار بازتولید (اسکیماها، کلیدهای خارجی، گزاره، هش فایل‌های ورودی، تنظیمات اجرای مجدد)
-- فایل `rowmap.parquet`: نگاشت هر ردیف خروجی به شمارهٔ ردیفش در فایل ورودی
-- فایل `orphans.parquet`: یتیم‌های ورودی که در خروجی مانده‌اند (ارجاع‌های معلق مجاز)
-- فایل `expected/expected.parquet`: نسخهٔ ثابت فایل انتظار، اگر استفاده شده باشد
-- فایل `result.json`: وضعیت، برچسب کمینگی، آمار و نتیجهٔ اجرای مجدد
-- فایل `checkpoint.json`: آخرین پیکربندی تأییدشده (برای بازیابی اجرایی که متوقف شده)
+- فایل `report.md`: خلاصهٔ خوانا (نتیجه، تعداد ردیف‌ها قبل و بعد، گزاره، مشاهده‌ها و آمار جست‌وجو)
+- فایل `manifest.json`: خلاصهٔ مرجع اجرا (نسخه‌ها، تنظیمات، هش ورودی‌ها، آمار، نتیجهٔ اجرای مجدد و فهرست همهٔ فایل‌ها با اندازه و هش)
+- پوشهٔ `tables/`: ردیف‌های نگه‌داشته‌شدهٔ هر جدول به‌صورت Parquet (منبع اصلی)
+- پوشهٔ `csv/`: نسخهٔ CSV برای راحتی (نوع داده‌ها حفظ نمی‌شود)
+- پوشهٔ `pytest/`: تست رگرسیون تولیدی (فقط پس از اجرای مجدد تأییدشده)
+- فایل `explain.json`: مشاهده‌ها دربارهٔ ردیف‌های باقی‌مانده
+- فایل `spec.json`: توصیف نوع‌دار و نسخه‌دار بازتولید که اجرای مجدد از آن می‌خواند
+- فایل‌های `rowmap.parquet`، `orphans.parquet` و `checkpoint.json`: نگاشت ردیف‌ها، یتیم‌های ورودی و آخرین پیکربندی تأییدشده
+
+### تست تولیدی
+
+- محتوا: بستهٔ تست شامل `test_<name>.py`، فایل قابل‌ویرایش `query.sql`، فایل `reproducer.json`، پوشهٔ `fixtures/` و فایل `_failslice_portable.py` است. فایل آخر کپی دقیقِ همان کدی است که خود فیل‌اسلایس با آن نتیجه را طبقه‌بندی می‌کند.
+- وابستگی‌ها: تست فقط به `pytest` و `duckdb` نیاز دارد و هرگز دادهٔ اصلی شما را نمی‌خواند. پیش از اجرای گزاره، هش فایل‌ها، اسکیما و سلامت کلیدهای خارجی را بررسی می‌کند.
+- حالت پیش‌فرض (`--expect fails`): تست تا وقتی باگ وجود دارد پاس می‌شود.
+- حالت `--expect passes`: تست وقتی پاس می‌شود که باگ برطرف شده باشد. پس از اصلاح پایپ‌لاین، SQL اصلاح‌شده را در `query.sql` بگذارید؛ داده‌ها یک برداشت ثابت می‌مانند.
+- هر نتیجهٔ دیگر (خطای نامرتبط، نتیجهٔ نادرست یا تمام‌شدن مهلت) در هر دو حالت تست را رد می‌کند.
+
+### خط فرمان
+
+- دستور `failslice init`: ساخت فایل پیکربندی با پیشنهاد کلیدها (فایل موجود را بازنویسی نمی‌کند)
+- دستور `failslice check`: اعتبارسنجی پیکربندی و گزاره، شمارش یتیم‌ها و بررسی پایداری
+- دستور `failslice reduce`: کوچک‌سازی، خروجی، اجرای مجدد و ساخت گزارش، مانیفست، CSV و تست
+- دستور `failslice verify`: اجرای مجدد یک پوشهٔ اجرا در پردازهٔ تازه
+- دستور `failslice export-test`: تأیید دوباره و نوشتن بستهٔ تست در پوشهٔ دلخواه
+- دستور `failslice explain`: مشاهده‌ها دربارهٔ ردیف‌های باقی‌مانده
+
+دستورهای `check` و `reduce` به‌طور پیش‌فرض در پردازهٔ جدا با مهلت سخت اجرا می‌شوند. همهٔ دستورها گزینهٔ `--json` دارند. کدهای خروج: صفر یعنی موفق، ۱ یعنی بررسی یا اجرای مجدد رد شد، ۲ یعنی ورودی یا پیکربندی یا گزارهٔ نامعتبر، ۳ یعنی نتیجه‌نگرفتن به‌خاطر بودجه یا مهلت، ۴ یعنی خطای اجرایی، و ۱۳۰ یعنی قطع توسط کاربر.
 
 ### تضمین‌ها و محدودیت‌ها
 
@@ -355,7 +450,8 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 - **فقط خطای مشاهده‌شده نگه داشته می‌شود:** پیکربندی فقط پس از یک ارزیابی تازه با نتیجهٔ TRUE پذیرفته می‌شود. حافظهٔ نهان فقط نتیجه‌های منفی را به‌عنوان راهنمای جست‌وجو نگه می‌دارد.
 - **هیچ ارجاع معلق تازه‌ای ساخته نمی‌شود:** هر پیکربندی و خروجی نهایی همهٔ کلیدهای خارجی‌ای را که در ورودی برقرار بوده‌اند حفظ می‌کند. یتیم‌های ورودی به‌عنوان استثنای ثبت‌شده باقی می‌مانند و «تعمیر» نمی‌شوند.
 - **اجرای مجدد مستقل:** نتیجه در یک پردازهٔ تازه و فقط از فایل‌های خروجی دوباره اجرا می‌شود. وضعیت `verified` یعنی آنجا هم گزاره TRUE بوده و یکپارچگی برقرار است.
-- **برچسب‌های صادقانه:** برچسب `1-minimal (verified)` فقط وقتی داده می‌شود که مرحلهٔ گواهی کامل شده و حذف هر ردیف تکی FALSE بوده باشد؛ در غیر این صورت نتیجه فقط «کوچک‌شده» است. فیل‌اسلایس هرگز ادعای کوچک‌ترین نتیجهٔ ممکن یا یافتن علت ریشه‌ای را نمی‌کند.
+- **برچسب‌های صادقانه:** برچسب `1-minimal (verified)` فقط وقتی داده می‌شود که مرحلهٔ گواهی کامل شده، حذف هر ردیف تکی FALSE بوده، اجرای مجدد تأیید شده و خروجی بدون اتلاف بوده باشد؛ در غیر این صورت نتیجه فقط «کوچک‌شده» است. فیل‌اسلایس هرگز ادعای کوچک‌ترین نتیجهٔ ممکن یا یافتن علت ریشه‌ای را نمی‌کند؛ دستور `explain` فقط مشاهده گزارش می‌کند و کلیدهای حدس‌زده در `init` فقط پیشنهادند.
+- **تست قابل‌حمل و صادق:** تست تولیدی نتیجه را با کپی دقیق کد خود فیل‌اسلایس طبقه‌بندی می‌کند، هش داده‌ها و سلامت کلیدها را بررسی می‌کند و فقط با همان نتیجهٔ مورد انتظار پاس می‌شود.
 - **قطعیت:** ورودی، تنظیمات و seed یکسان نتیجهٔ یکسان می‌دهند (برای اجراهایی که با محدودیت زمانی متوقف نشده‌اند).
 - **گزارهٔ محصور:** فقط یک `SELECT` روی جدول‌های تعریف‌شده پذیرفته می‌شود؛ تابع‌های خواندن فایل و تابع‌های ناپایدار رد می‌شوند، مسیرهای ورودی باید داخل ریشهٔ مجاز بمانند و دسترسی DuckDB به فایل‌های بیرونی پس از بارگذاری خاموش می‌شود.
 
@@ -363,12 +459,12 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 
 - فقط کلید خارجی تک‌ستونی پشتیبانی می‌شود و چرخه (از جمله ارجاع جدول به خودش) مجاز نیست.
 - همهٔ داده در حافظه بارگذاری می‌شود.
-- بدون `isolate=True` مهلت زمانی همکارانه است: کوئری SQL را قطع می‌کند اما کار سمت پایتون (مثل یک عبارت منظم کند) را نه.
+- در اجرای درون‌پردازه‌ای (پیش‌فرض کتابخانه یا گزینهٔ `--no-isolate`) مهلت زمانی همکارانه است: کوئری SQL را قطع می‌کند اما کار سمت پایتون (مثل یک عبارت منظم کند) را نه.
 - گزاره باید قطعی باشد؛ گزاره‌های غیرقطعی به‌طور پیش‌فرض رد می‌شوند.
 
 ### نقشهٔ راه
 
-- **مرحلهٔ ۳:** خروجی CSV، مانیفست، گزارش Markdown، تولید خودکار تست رگرسیون pytest و ابزار خط فرمان `failslice`
+- **مرحلهٔ ۳ (انجام شد):** مانیفست، گزارش، CSV، تست رگرسیون pytest تولیدی، دستور `explain`، دستور `init` با پیشنهاد کلیدها و ابزار خط فرمان `failslice`
 - **مرحلهٔ ۴:** سرور MCP به نام `failslice-mcp` تا عامل‌های هوش مصنوعی هم بتوانند همین چرخه را اجرا کنند
 - **مرحلهٔ ۵:** نمونه‌ها و بنچمارک‌های تولیدشده
 - **مرحلهٔ ۶:** آماده‌سازی و انتشار نسخهٔ اول

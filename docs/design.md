@@ -4,8 +4,9 @@ Status: agreed design after Phase 1 (Claude draft + independent Codex design + t
 rounds; history in the git-ignored `.handoff/phase1-*`). Decisions are recorded as ADRs in
 [`docs/decisions/`](decisions/). The core engine (config, loading, predicate outcomes,
 cascade ddmin, cache, budgets, supervisor, replay; §3-§11, §13) is implemented as of
-Phase 2 and was revised after an independent audit. Artifacts beyond the run directory,
-the CLI and the MCP server (§12 manifest/report/pytest, §14) are still planned.
+Phase 2 and was revised after an independent audit. Phase 3 added the artifacts (§12:
+manifest, report, CSV, explain, the portable pytest bundle; ADR 0009) and the CLI (§14;
+ADR 0010). The MCP server (§14) is planned for Phase 4.
 
 ## 1. Problem statement
 
@@ -300,31 +301,55 @@ rows; a lossy round trip is recorded in `spec.json` `warnings` and reported. The
 - `integrity-failed`;
 - `unverified` (deadline).
 
-## 12. Artifacts
+## 12. Artifacts (ADR 0009)
 
-Run directory `.failslice/runs/<run-id>/`:
+Run directory `.failslice/runs/<run-id>/`, written in this order: the export (inside the
+reduction budget), the replay, then the finalizer (`artifacts.finalize`), which writes CSV,
+the pytest bundle, `explain.json`, `report.md` and, atomically and last, `manifest.json`.
+The finalizer shares the replay reserve: each step checks the deadline first and runs its
+DuckDB work under the watchdog; a skipped or failed step is recorded in the manifest
+(`steps`). After the deadline only the report and the manifest are written.
 
-- `spec.json` (implemented): the typed, versioned contract of the run directory
-  (`RunSpec`, format 3, ADR 0008 and 0009): tables with exported and source schemas, FKs,
-  predicate, expectation, input provenance (path, sha256, rows), replay settings,
-  warnings. Replay and every later artifact read only this.
-- `result.json` (implemented): status, minimality, statistics, verification.
-- `tables/<t>.parquet` (source of truth) and `csv/<t>.csv` (convenience, planned)
-- `rowmap.parquet`: table, output row index, original `__fs_rid`
+- `spec.json`: the typed, versioned contract of the run directory (`RunSpec`, format 3,
+  ADR 0008/0009): tables with exported and source schemas and declared primary keys, FKs,
+  predicate, expectation, input provenance (path, sha256, rows), run settings, input
+  orphan counts, replay settings, warnings. Replay and every artifact read only this.
+- `manifest.json` (format 1): the authoritative summary: versions (FailSlice, DuckDB,
+  Python), run id and times, effective config and settings, inputs, per-table rows
+  before/after and schemas, statistics (completed and started evaluations, outcomes,
+  error classes, cache hits, acceptances, sweeps, stop reason, reduction time), total
+  time, status, minimality label and detail, verification, notes, finalizer steps, and an
+  inventory of every file (path, role, bytes, sha256; the manifest and the checkpoint are
+  not listed). Unknown numbers stay `null`.
+- The minimality label is "1-minimal (verified)" only if certification completed, the
+  replay is verified and the export recorded no lossy round trip.
+- `tables/<t>.parquet` (source of truth); `csv/<t>.csv` (convenience: UTF-8, header,
+  unquoted `\N` for NULL, non-NULL text quoted; types are not preserved).
+- `rowmap.parquet`: table, output row index, original `__fs_rid`.
 - `orphans.parquet`: the input-orphan exemptions that survive in the output, as
-  `(fk edge, child table, output row index, original __fs_rid)`; replay needs only this file
-  and `rowmap.parquet`, never the original data
-- `expected/expected.parquet`: the snapshot of an expectation file used by an `expect:`
-  predicate, written from the copy loaded once when the engine starts (its hash is part
-  of the input identity), so editing the original file during a run cannot change the
-  oracle or the replay
-- `manifest.json`: input/output hashes, row counts before/after, predicate, config, engine
-  versions, seed, evaluation counts by outcome, elapsed time, stop reason, verification
-  status, `minimality: "verified" | "not verified"`
-- `report.md`; `checkpoint.json`
-- `export-test` writes `test_<name>.py` plus fixture Parquet (and the expectation snapshot, if any); polarity flag
-  `--expect fails` (default, the test asserts the failure) or `--expect passes` (regression
-  test for after the fix).
+  `(fk edge, child table, output row index, original __fs_rid)`.
+- `expected/expected.parquet`: the snapshot of an expectation file, written from the copy
+  loaded once when the engine starts.
+- `explain.json` / `failslice explain`: observations on the reduced data (row and NULL
+  counts, duplicated declared-PK values, per FK: NULL references, surviving input
+  orphans, duplicated parent keys, and per key children x parents = pairs of the declared
+  equality join). Worded as observations on rows that survived reduction; never "needed"
+  or "caused".
+- `report.md`: result line, rows before/after, predicate, FKs, observations, search
+  statistics, notes, how to reproduce, incomplete steps.
+- `pytest/` (only after a verified replay) and `failslice export-test --out DIR` (which
+  re-verifies the run first): `test_<name>.py`, `query.sql`, `reproducer.json`,
+  `fixtures/` and `_failslice_portable.py`, a byte-identical copy of
+  `failslice/portable.py` (stdlib + DuckDB only: outcome classification, typed comparison,
+  the tagged JSON expectation codec, the integrity check and the bundle runner). The test
+  loads its companion by path under a unique module name, checks fixture hashes, rebuilds
+  the tables with the restoring casts baked in at generation time, disables extension
+  auto-loading and external access, checks schemas and referential integrity, runs
+  `query.sql` and requires a classified TRUE (`EXPECT = "fails"`) or FALSE
+  (`EXPECT = "passes"`); ERROR and TIMEOUT fail either way. The bundle is staged, checked
+  with `run_bundle` (it must classify TRUE) and renamed into place; an existing
+  destination is refused. No absolute paths, timestamps or run ids are written into it.
+- `checkpoint.json`: last confirmed configuration and its statistics.
 
 ## 13. Safety model (ADR 0007)
 
@@ -347,16 +372,25 @@ writes files, escapes the allowed root, or mutates state.
   external access is the actual barrier for file access.
 - Not in scope: resource exhaustion beyond the budgets; malicious DuckDB bugs.
 
-## 14. CLI and MCP (overview; details in Phases 3-4)
+## 14. CLI and MCP
 
-CLI (Typer): `init` (scaffold + PK/FK **suggestions**), `check`, `reduce`, `verify`,
-`export-test`, `explain`; rich progress (shrink ratio, evaluations, elapsed).
+CLI (Typer, ADR 0010): `init` (scaffold + PK/FK **suggestions**, all commented out, from
+a deterministic 10,000-row prefix per file unless `--full-scan`; never overwrites),
+`check`, `reduce`, `verify`, `export-test`, `explain`. `check` and `reduce` run supervised
+by default (`--no-isolate` for in-process). Rich progress on stderr (phase, rows kept,
+shrink ratio, evaluations, elapsed) only on a TTY. `--json` prints exactly one versioned
+envelope `{format, command, status, exit_code, run_dir, data, error}`. Exit codes: 0
+success, 1 requirement failed (not failing, nondeterministic, replay-failed,
+integrity-failed), 2 usage / config / safety rejection, 3 inconclusive (budget or deadline
+before a confirmed candidate, replay unverified), 4 operational / artifact / internal
+error, 130 interrupted. `--out` paths must stay inside the allowed root.
 
-MCP (`mcp` 2.x, `MCPServer`): tools `inspect_dataset`, `suggest_relationships`,
+MCP (Phase 4; `mcp` 2.x, `MCPServer`): tools `inspect_dataset`, `suggest_relationships`,
 `check_predicate`, `reduce_failure` (progress notifications via `ctx.report_progress`,
 budgets), `verify_reproducer`, `explain_reproducer`, `export_pytest`, all with structured
 output (typed return models); resources for the latest manifest, report and reduced-table
-previews; one prompt "debug this data bug".
+previews; one prompt "debug this data bug". Still open for Phase 4: a unified run
+lifecycle object and programmatic cancellation.
 
 ## 15. Test plan
 
