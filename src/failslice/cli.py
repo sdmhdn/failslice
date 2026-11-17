@@ -300,6 +300,8 @@ def check_cmd(
 # ---------------------------------------------------------------------------- reduce
 def _reduce_exit(result: ReductionResult) -> tuple[str, str]:
     """(status, exit kind) for a finished reduction, from the recorded reason."""
+    if result.status == "cancelled":
+        return "cancelled", "interrupted"
     if result.status == "no-candidate":
         if result.failure == "crashed":
             return "error", "error"

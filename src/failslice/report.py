@@ -57,7 +57,13 @@ def render_report(manifest: Manifest, explanation: Explanation | None) -> str:
     """Render ``report.md`` from the manifest (and the explanation, if computed)."""
     m = manifest
     out: list[str] = [f"# FailSlice report: run {m.run_id}", ""]
-    if m.status == "no-candidate":
+    if m.status == "cancelled":
+        out += [
+            "**Cancelled.** The run was cancelled by the caller; nothing was recovered, "
+            "replayed or verified, and no reproducer is claimed.",
+            "",
+        ]
+    elif m.status == "no-candidate":
         out += [
             "**No reproducer.** The run stopped before any reduced configuration was "
             "confirmed to make the predicate TRUE.",

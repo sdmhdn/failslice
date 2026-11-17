@@ -7,6 +7,7 @@ configuration the reducer ends on was evaluated TRUE.
 from __future__ import annotations
 
 import dataclasses
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -39,6 +40,8 @@ class StopReason(StrEnum):
     WALL_CLOCK = "wall_clock"
     KILLED = "killed"
     """The supervisor killed the reduction process (hard deadline or unresponsive engine)."""
+    CANCELLED = "cancelled"
+    """The caller cancelled the run."""
     CRASHED = "crashed"
     """The reduction process failed with an error (or died) before reporting."""
 
@@ -161,8 +164,10 @@ class Reducer:
         on_accept: Callable[[Engine], None] | None = None,
         on_confirmed: Callable[[Engine], None] | None = None,
         clock: Callable[[], float] = time.perf_counter,
+        cancel: threading.Event | None = None,
     ) -> None:
         self.engine = engine
+        self.cancel = cancel
         self.budget = budget
         self.on_progress = on_progress
         self.before_eval = before_eval
@@ -193,6 +198,8 @@ class Reducer:
         return self.clock() - self._start
 
     def _check_budget(self) -> None:
+        if self.cancel is not None and self.cancel.is_set():
+            raise BudgetExhaustedError(StopReason.CANCELLED)
         if self.stats.evaluations >= self.budget.max_evals:
             raise BudgetExhaustedError(StopReason.MAX_EVALS)
         if self._elapsed() >= self.budget.wall_clock_s:
@@ -297,7 +304,11 @@ class Reducer:
             self.stats.stop_reason = stop.reason
             if self.stats.minimality is not Minimality.VERIFIED and certify:
                 self.stats.minimality = Minimality.NOT_VERIFIED
-                self.stats.minimality_detail = f"stopped by budget ({stop.reason.value})"
+                self.stats.minimality_detail = (
+                    "cancelled"
+                    if stop.reason is StopReason.CANCELLED
+                    else f"stopped by budget ({stop.reason.value})"
+                )
         self.stats.sizes_after = self.engine.sizes
         self.stats.cache_hits = self.engine.cache_hits
         self.stats.elapsed_s = self._elapsed()

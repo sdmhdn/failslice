@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import platform
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -89,7 +90,7 @@ class Manifest(_Model):
     elapsed_s: float
     """Whole run as measured by the caller (reduction, export, replay, finalization)."""
     versions: dict[str, str]
-    status: Literal["reduced", "no-candidate"]
+    status: Literal["reduced", "no-candidate", "cancelled"]
     minimality: str
     """The label: "1-minimal (verified)", "reduced, minimality not verified" or "no reproducer"."""
     minimality_detail: str
@@ -103,6 +104,9 @@ class Manifest(_Model):
     shrink_ratio: float | None
     """``rows_after / rows_before``."""
     stats: dict[str, Any] | None
+    failure: Literal["killed", "crashed", "cancelled"] | None = None
+    """Why the run stopped early, if it did: cancelled by the caller, or (isolated) the
+    reduction process was killed or crashed."""
     notes: tuple[str, ...]
     steps: tuple[StepStatus, ...]
     artifacts: tuple[ArtifactEntry, ...]
@@ -185,8 +189,9 @@ def minimality_label(result: ReductionResult, spec: RunSpec | None) -> str:
 
 
 class _Steps:
-    def __init__(self, deadline: float | None) -> None:
+    def __init__(self, deadline: float | None, cancel: threading.Event | None = None) -> None:
         self.deadline = deadline
+        self.cancel = cancel
         self.done: list[StepStatus] = []
 
     def remaining(self) -> float | None:
@@ -195,6 +200,9 @@ class _Steps:
     def run(self, name: Any, fn: Callable[[], None], skip: str | None = None) -> bool:
         if skip is not None:
             self.done.append(StepStatus(name=name, status="skipped", detail=skip))
+            return False
+        if self.cancel is not None and self.cancel.is_set():
+            self.done.append(StepStatus(name=name, status="skipped", detail="cancelled"))
             return False
         left = self.remaining()
         if left is not None and left <= 0:
@@ -279,11 +287,14 @@ def finalize(
     *,
     deadline: float | None = None,
     explain_limit: int = 10,
+    cancel: threading.Event | None = None,
 ) -> Manifest:
-    """Write the remaining artifacts and the manifest for a finished run."""
+    """Write the remaining artifacts and the manifest for a finished run. ``cancel`` is
+    checked between steps (cooperative): once set, the remaining artifact steps are
+    skipped and only the report and the manifest are written."""
     run_dir = context.run_dir
     spec = result.spec
-    steps = _Steps(deadline)
+    steps = _Steps(deadline, cancel)
     no_spec = None if spec is not None else "no exported reproducer"
     steps.run("csv", lambda: write_csv(run_dir, spec, deadline), skip=no_spec)  # type: ignore[arg-type]
     verified = result.verification is not None and result.verification.ok
@@ -302,8 +313,9 @@ def finalize(
 
     steps.run("explain", do_explain, skip=no_spec)
     manifest_without_report = _manifest(context, result, steps.done, ())
-    # The report is written regardless of the deadline (bounded by metadata size).
+    # The report is written regardless of the deadline or a cancel (bounded by metadata size).
     steps.deadline = None
+    steps.cancel = None
     steps.run(
         "report",
         lambda: _discard(
@@ -367,7 +379,7 @@ def _manifest(
         finished_at=_now(),
         elapsed_s=round(time.monotonic() - context.started, 3),
         versions=versions(),
-        status=result.status,  # type: ignore[arg-type]
+        status=result.status,
         minimality=minimality_label(result, spec),
         minimality_detail=stats.minimality_detail if stats is not None else "",
         verification=json.loads(result.verification.to_json()) if result.verification else None,
@@ -379,6 +391,7 @@ def _manifest(
         rows_after=after,
         shrink_ratio=ratio,
         stats=stats_data,
+        failure=result.failure,
         notes=tuple(result.notes),
         steps=tuple(steps),
         artifacts=artifacts,
