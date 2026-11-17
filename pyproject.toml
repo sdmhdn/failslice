@@ -30,6 +30,7 @@ classifiers = [
 # Runtime dependencies: see docs/decisions/0006-interfaces-and-dependencies.md.
 dependencies = [
     "duckdb>=2.0",
+    "mcp>=2.3.0",
     "pydantic>=2.14",
     "pyyaml>=6.0.3",
     "sqlglot>=30.31",
