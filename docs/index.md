@@ -33,8 +33,8 @@ still makes this failure happen?* Concretely:
   really ran;
 - the output is **actionable**: a self-contained pytest bundle (needs only `pytest` and
   `duckdb`) that documents the bug today and guards against its return after the fix;
-- (planned, Phase 4) an **MCP server**, so an AI agent can go from "here are my files" to
-  "here is a failing test" without loading millions of rows into its context.
+- an **MCP server**, so an AI agent can go from "here are my files" to "here is a failing
+  test" without loading millions of rows into its context.
 
 FailSlice isolates rows; it does not determine the root cause, and it never claims that no
 smaller reproducer exists.
@@ -48,5 +48,6 @@ smaller reproducer exists.
 | [Foreign keys and minimality](foreign-keys.md) | FK semantics, input orphans, cascade deletion, what "1-minimal" means |
 | [Command line and Python API](cli.md) | commands, options, exit codes, `--json`, the library API |
 | [Run artifacts](artifacts.md) | the run directory, manifest, report, CSV, `explain`, the generated test, replay |
+| [MCP server](mcp.md) | `failslice-mcp` for AI agents: setup, tools, resources, limits |
 | [Design](design.md) | architecture and the reasoning behind it; decisions in [`decisions/`](decisions/) |
 | [راهنمای فارسی](guide-fa.md) | the complete user guide in Persian |

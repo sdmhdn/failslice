@@ -6,7 +6,7 @@ rounds; history in the git-ignored `.handoff/phase1-*`). Decisions are recorded 
 cascade ddmin, cache, budgets, supervisor, replay; §3-§11, §13) is implemented as of
 Phase 2 and was revised after an independent audit. Phase 3 added the artifacts (§12:
 manifest, report, CSV, explain, the portable pytest bundle; ADR 0009) and the CLI (§14;
-ADR 0010). The MCP server (§14) is planned for Phase 4.
+ADR 0010). Phase 4 added the MCP server (§14; ADR 0011) and cancellation.
 
 ## 1. Problem statement
 
@@ -396,12 +396,17 @@ integrity-failed), 2 usage / config / safety rejection, 3 inconclusive (budget o
 before a confirmed candidate, replay unverified), 4 operational / artifact / internal
 error, 130 interrupted. `--out` paths must stay inside the allowed root.
 
-MCP (Phase 4; `mcp` 2.x, `MCPServer`): tools `inspect_dataset`, `suggest_relationships`,
-`check_predicate`, `reduce_failure` (progress notifications via `ctx.report_progress`,
-budgets), `verify_reproducer`, `explain_reproducer`, `export_pytest`, all with structured
-output (typed return models); resources for the latest manifest, report and reduced-table
-previews; one prompt "debug this data bug". Still open for Phase 4: a unified run
-lifecycle object and programmatic cancellation.
+MCP (`failslice-mcp`, `mcp` 2.3.0, `MCPServer`, stdio; ADR 0011): tools
+`inspect_dataset`, `suggest_relationships`, `check_predicate`, `reduce_failure` (progress
+notifications as elapsed seconds plus a message; cancellable), `verify_reproducer`,
+`explain_reproducer`, `export_pytest`, each returning the `Reply` envelope with typed data
+or a structured error; resources for run lists, manifests, reports and bounded table
+previews (`latest` alias); the prompt `debug-data-bug`. A required `--root` confines every
+path; runs and exports go under `<root>/.failslice/`; one expensive operation at a time;
+budgets above the server's ceilings are rejected. Cancellation is a `threading.Event`
+passed through `reduce`, `check`, the supervisor (`_pump` kills and reaps the child) and
+the replay subprocess; a cancelled run is not recovered and has status `cancelled`.
+Details for users: [`mcp.md`](mcp.md).
 
 ## 15. Test plan
 

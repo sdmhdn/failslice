@@ -1,0 +1,110 @@
+# MCP server
+
+`failslice-mcp` exposes the FailSlice loop to AI agents over the
+[Model Context Protocol](https://modelcontextprotocol.io/) (stdio transport), so an agent can
+go from "here are my files" to "here is a failing pytest test" without loading the data into
+its context. Design and limits: [ADR 0011](decisions/0011-mcp-server.md).
+
+## Running it
+
+```bash
+failslice-mcp --root /absolute/path/to/your/data      # from an installed FailSlice
+uv run --directory /path/to/failslice failslice-mcp --root /absolute/path/to/data   # from source
+```
+
+`--root` is required. The server can read supported files only inside it and writes only
+under `<root>/.failslice/`. Options: `--max-evals`, `--wall-clock`, `--eval-timeout`
+(ceilings for what an agent may request; defaults 5,000 evaluations, 900 s, 30 s).
+
+FailSlice is not on PyPI yet. Once it is, `uvx --from failslice failslice-mcp --root ...`
+will work without a checkout.
+
+## Client configuration
+
+All three clients use the same `mcpServers` format; use absolute paths.
+
+```json
+{
+  "mcpServers": {
+    "failslice": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/failslice", "failslice-mcp",
+               "--root", "/path/to/your/data"]
+    }
+  }
+}
+```
+
+- **Claude Code:** put it in `.mcp.json` at your project root (or use `claude mcp add`).
+- **Claude Desktop:** add it to `claude_desktop_config.json`.
+- **Cursor:** add it to `.cursor/mcp.json`.
+
+The FailSlice tests exercise the server through the SDK's in-memory client; a session from
+Claude Code was tried by hand. Claude Desktop and Cursor use the same configuration format
+but are not tested by the project.
+
+Reductions can take minutes. The server sends progress notifications (elapsed seconds and
+a message with rows kept and evaluations), but a client may still apply its own request
+timeout; raise it if your client allows.
+
+## Tools
+
+Every tool returns `{format, status, data, error, warnings}`; `error` is
+`{code, message, field, retryable}` and the result is marked as an error when it is set.
+
+| tool | does |
+|---|---|
+| `inspect_dataset` | exact row and NULL counts, schemas, declared-FK orphan counts, bounded previews and a config template, for a `directory` or a `tables` mapping |
+| `suggest_relationships` | primary/foreign key **suggestions** with evidence and confidence, plus a `failslice.yaml` text with them commented out |
+| `check_predicate` | validation and the determinism check for a project |
+| `reduce_failure` | the full run: reduce, export, replay, report, manifest, CSV, pytest bundle; progress notifications; cancellable |
+| `verify_reproducer` | replay a run in a fresh process |
+| `explain_reproducer` | observations on the surviving rows (not a diagnosis) |
+| `export_pytest` | re-verify and write a pytest bundle under `<root>/.failslice/exports/<run_id>/` |
+
+Projects are given either as `config_path` (a `failslice.yaml` inside the root) or as an
+inline `config` with the same structure (`tables`, `foreign_keys`, `predicate` with one of
+`sql` / `expect` / `raises`, optional `settings`); inline paths are relative to `base_dir`
+(default: the root). The input schema of each tool describes the full structure.
+
+Runs are addressed by `run_id` (returned by `reduce_failure`) or `latest`.
+
+### Budgets and concurrency
+
+- An explicit budget above the server's ceiling is rejected (`over_ceiling`); defaults that
+  nobody set are lowered to the ceiling. The reply reports the effective settings.
+- One expensive operation runs at a time; a second call gets `busy` (retryable). Resources
+  stay readable.
+- Cancelling a request kills the work it started (the reduction child process, a replay).
+  A cancelled run is not recovered or verified; its manifest and report record the
+  cancellation. Artifact steps that are already running (CSV, bundle, explain) finish first.
+
+## Resources
+
+| URI | content |
+|---|---|
+| `failslice://runs` | runs, newest first (at most 50): id, status, minimality, creation time |
+| `failslice://runs/{run_id}/manifest` | `manifest.json` |
+| `failslice://runs/{run_id}/report` | `report.md` |
+| `failslice://runs/{run_id}/tables/{table}/preview` | first rows of a reduced table, with exact counts |
+
+`{run_id}` may be `latest`. Only these artifacts are readable; there is no generic file
+reader.
+
+## Prompt
+
+`debug-data-bug` (arguments: `bug`, optional `directory`, `config_path`,
+`expected_behavior`, `expect`) gives the agent a step-by-step workflow from the bug
+description to an exported test.
+
+## Safety and limits
+
+- Every path is resolved (symlinks followed) and must stay inside the root; glob
+  characters, FIFOs and devices are refused. Predicates are validated as everywhere else,
+  and DuckDB's external file access is switched off after loading.
+- Size limits: 64 KiB per config, 16 KiB of predicate SQL, 32 tables, 64 KiB per tool
+  reply, 256 KiB per resource; previews at most 20 rows and 50 columns with cells cut in
+  SQL.
+- The root is an authorization, not a secret: an agent connected to the server can read
+  the supported data files inside it. Data values are untrusted content; the server's
+  instructions tell the agent so.

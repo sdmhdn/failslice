@@ -163,8 +163,18 @@ class ReductionResult:
         return minimality_label(self, self.spec)
 
 
+RUN_ID_PATTERN = r"^\d{8}T\d{6}Z-[0-9a-f]{6}$"
+"""Format of generated run ids (also the run directory name)."""
+
+
+def new_run_id() -> str:
+    """A new run id: UTC timestamp plus 6 random hex digits."""
+    return _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
+
+
 def _new_run_dir(project: Project, out_dir: str | Path | None) -> tuple[Path, str]:
-    run_id = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
+    """Create the run directory; the run id is the directory's name."""
+    run_id = new_run_id()
     if out_dir is None:
         # Resolved like every other path, so a symlinked .failslice cannot redirect writes
         # outside the allowed root.
@@ -176,7 +186,7 @@ def _new_run_dir(project: Project, out_dir: str | Path | None) -> tuple[Path, st
     run_dir.mkdir(parents=True, exist_ok=True)
     if any(p.name != ".gitkeep" for p in run_dir.iterdir()):
         raise ConfigError(f"run directory {run_dir} is not empty")
-    return run_dir, run_id
+    return run_dir, run_dir.name
 
 
 def reduce(

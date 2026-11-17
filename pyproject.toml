@@ -39,6 +39,7 @@ dependencies = [
 
 [project.scripts]
 failslice = "failslice.cli:main"
+failslice-mcp = "failslice.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/sdmhdn/failslice"
