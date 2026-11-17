@@ -119,10 +119,16 @@ def _replay(root: Path) -> VerificationReport:
                     "replay-failed",
                     detail=f"schema of {name!r} differs: {got} != {list(table.columns)}",
                 )
-            con.execute(
-                f"CREATE TABLE {_q(name)} AS "
-                + restoring_select(raw, table.columns, table.source_columns)
-            )
+            try:
+                con.execute(
+                    f"CREATE TABLE {_q(name)} AS "
+                    + restoring_select(raw, table.columns, table.source_columns)
+                )
+            except duckdb.Error as exc:
+                return VerificationReport(
+                    "replay-failed",
+                    detail=f"cannot restore the source types of {name!r}: {exc}",
+                )
             con.execute(f"DROP TABLE {raw}")
             restored = _describe(con, _q(name))
             if restored != [tuple(c) for c in table.source_columns]:
@@ -190,6 +196,8 @@ def _check_exemptions(
     for edge, row_index in exempt:
         if edge is None or row_index is None:
             return "malformed orphans metadata: NULL edge or row index"
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in (edge, row_index)):
+            return f"malformed orphans metadata: non-integer entry ({edge!r}, {row_index!r})"
         if not 0 <= int(edge) < len(fks):
             return f"malformed orphans metadata: unknown edge {edge}"
         child = fks[int(edge)].child

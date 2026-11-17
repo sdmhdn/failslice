@@ -155,9 +155,11 @@ predicate:
     error_class: ConversionException    # optional
 ```
 
-Every evaluation is classified as `TRUE`, `FALSE`, `ERROR` (malformed result or a
-different error) or `TIMEOUT`. Only `TRUE` counts as "still failing", so the search
-cannot drift to a different bug.
+Every evaluation is classified as `TRUE`, `FALSE`, `ERROR` (malformed result or an error
+the predicate does not match) or `TIMEOUT`. Only `TRUE` counts as "still failing": every
+kept configuration satisfies *your predicate*, so make the predicate as specific as the
+bug (a broad `raises.match` regex can let the search keep a different error that
+matches it).
 
 Tips:
 
@@ -324,7 +326,7 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 2. **شکل انتظار** (کلید `expect`): باگ وقتی وجود دارد که نتیجهٔ کوئری با مقدار مورد انتظار فرق کند (یا با `mode: equals` وقتی برابر باشد). مقدار مورد انتظار یا درون‌خطی است (`expected`) یا از فایل (`expected_file`). مقایسه به‌صورت پیش‌فرض مستقل از ترتیب ردیف‌هاست و تلورانس عددی اختیاری دارد.
 3. **شکل خطا** (کلید `raises`): باگ وقتی وجود دارد که کوئری خطایی از DuckDB بدهد که پیامش با عبارت منظم `match` و (در صورت تعیین) کلاسش با `error_class` بخواند.
 
-هر اجرای گزاره یکی از این چهار نتیجه را می‌گیرد: `TRUE`، `FALSE`، `ERROR` (نتیجهٔ نادرست یا خطای دیگر) یا `TIMEOUT`. فقط `TRUE` یعنی «هنوز خراب است»، بنابراین جست‌وجو به سمت باگ دیگری منحرف نمی‌شود.
+هر اجرای گزاره یکی از این چهار نتیجه را می‌گیرد: `TRUE`، `FALSE`، `ERROR` (نتیجهٔ نادرست یا خطایی که با گزاره نمی‌خواند) یا `TIMEOUT`. فقط `TRUE` یعنی «هنوز خراب است»: هر پیکربندی نگه‌داشته‌شده *گزارهٔ شما* را برقرار می‌کند، پس گزاره را به اندازهٔ خود باگ دقیق بنویسید (مثلاً عبارت منظم خیلی کلی در `raises.match` ممکن است اجازه دهد جست‌وجو به خطای دیگری که با آن می‌خواند برسد).
 
 چند توصیه:
 

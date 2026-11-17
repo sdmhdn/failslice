@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from failslice.config import ExpectPredicate, RaisesPredicate, SqlPredicate, literal_path
 
@@ -135,6 +137,16 @@ def _q(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _type_sql(text: str) -> str:
+    """Re-render a type name through sqlglot's type parser, so a (tampered) type string
+    can never smuggle SQL into a CAST: only a parsed data type is emitted. A string that
+    does not round-trip exactly fails the later schema check instead."""
+    try:
+        return exp.DataType.build(text, dialect="duckdb").sql(dialect="duckdb")
+    except (SqlglotError, ValueError) as exc:
+        raise RunSpecError(f"invalid column type {text!r}: {exc}") from exc
+
+
 def restoring_select(source: str, exported: Sequence[Column], wanted: Sequence[Column]) -> str:
     """``SELECT`` over ``source`` that casts columns whose exported type differs from
     the wanted (source) type back to it, keeping column order."""
@@ -143,7 +155,7 @@ def restoring_select(source: str, exported: Sequence[Column], wanted: Sequence[C
             f"column names differ: {[c for c, _ in exported]} != {[c for c, _ in wanted]}"
         )
     parts = [
-        _q(name) if have == want else f"CAST({_q(name)} AS {want}) AS {_q(name)}"
+        _q(name) if have == want else f"CAST({_q(name)} AS {_type_sql(want)}) AS {_q(name)}"
         for (name, have), (_, want) in zip(exported, wanted, strict=True)
     ]
     return f"SELECT {', '.join(parts) or '*'} FROM {source}"

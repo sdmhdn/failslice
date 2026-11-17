@@ -196,16 +196,19 @@ def test_short_isolated_budget_reduces(
     )
     res = failslice.reduce(p, out_dir=tmp_path / "run", isolate=True)
     assert res.status == "reduced", res.notes
+    assert res.stats is not None and res.stats.sizes_after == {"t": 1}  # really reduced
 
 
 # Finding 7: a slow progress callback cannot delay the hard deadline.
 def test_slow_progress_callback_does_not_delay_kill(
     project_factory: Callable[..., Project], tmp_path: Path
 ) -> None:
+    from tests.test_verify_and_api import SLOW_WHEN_SMALL
+
     p = project_factory(
         fanout_tables(),
         fks=FANOUT_FKS,
-        predicate=FANOUT_PREDICATE,
+        predicate=SLOW_WHEN_SMALL,
         settings={"eval_timeout_s": 60},
     )
     run_dir = tmp_path / "run"
@@ -222,14 +225,14 @@ def test_slow_progress_callback_does_not_delay_kill(
         run_dir,
         "rid",
         Budget(max_evals=100_000, wall_clock_s=600),
-        deadline=time.monotonic() + 6,
+        deadline=time.monotonic() + 5,
         on_progress=slow,
         grace_s=1,
     )
     elapsed = time.monotonic() - start
-    assert elapsed < 20, elapsed
-    assert seen  # the callback did run (on its own thread)
-    assert sup.stats is not None
+    assert sup.killed_reason == "deadline exceeded"  # the kill really happened ...
+    assert elapsed < 15, elapsed  # ... on time, although the callback sleeps 30 s
+    assert len(seen) == 1  # the callback ran on its own thread and was then abandoned
 
 
 def _stalled_frame_child(conn: Connection) -> None:
@@ -389,3 +392,109 @@ def test_reducer_snapshot_is_a_copy(project_factory: Callable[..., Project]) -> 
         assert snap.sizes_after == e.sizes and snap.minimality is Minimality.SKIPPED
     finally:
         e.close()
+
+
+# Second review, finding 1: tampered type strings cannot inject SQL into replay.
+def test_tampered_type_string_cannot_inject_sql(tmp_path: Path) -> None:
+    db = tmp_path / "data.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TYPE mood AS ENUM ('b', 'a')")
+    con.execute("CREATE TABLE t AS SELECT 3::INTEGER AS id, 'b'::mood AS m")
+    con.close()
+    (tmp_path / "failslice.yaml").write_text(
+        "tables:\n  t: {path: data.duckdb}\npredicate:\n  sql: SELECT count(*) > 0 FROM t\n"
+    )
+    res = failslice.reduce(
+        failslice.load_project(tmp_path / "failslice.yaml"), out_dir=tmp_path / "r"
+    )
+    assert res.verification is not None and res.verification.ok
+    spec = json.loads((tmp_path / "r" / "spec.json").read_text())
+    spec["tables"]["t"]["source_columns"][1][1] = (
+        "BIGINT) AS m FROM __fs_raw.t; CREATE TABLE injected AS SELECT 42; SELECT CAST(1 AS BIGINT"
+    )
+    (tmp_path / "r" / "spec.json").write_text(json.dumps(spec))
+    report = verify_run_dir(tmp_path / "r")
+    assert report.status == "replay-failed" and "cannot restore" in report.detail
+
+
+def test_restoring_select_only_emits_parsed_types() -> None:
+    from failslice.runspec import restoring_select
+
+    sql = restoring_select("src", [("m", "VARCHAR")], [("m", "BIGINT); DROP TABLE x; --")])
+    assert "DROP" not in sql and ";" not in sql
+
+
+# Second review, finding 2: fractional orphan coordinates are malformed.
+def test_fractional_orphan_metadata_is_rejected(
+    project_factory: Callable[..., Project], tmp_path: Path
+) -> None:
+    out = _fanout_run(project_factory, tmp_path)
+    duckdb.connect().execute(
+        "COPY (SELECT -0.1::DOUBLE AS edge, -0.1::DOUBLE AS row_index) "
+        f"TO '{out / 'orphans.parquet'}' (FORMAT parquet)"
+    )
+    report = verify_run_dir(out)
+    assert report.status == "integrity-failed" and "non-integer" in report.detail
+
+
+# Second review, finding 3: a round trip that cannot be restored is a warning.
+def test_unrestorable_round_trip_is_a_warning(
+    project_factory: Callable[..., Project], tmp_path: Path
+) -> None:
+    from failslice import engine as engine_mod
+
+    p = project_factory({"t": ([("x", "BIGINT")], [(1,)])}, predicate={"sql": "SELECT true"})
+    out = tmp_path / "run"
+    e = Engine(p, allowed_directories=[out])
+    real = engine_mod.restoring_select
+    try:
+        engine_mod.restoring_select = lambda *a: real(*a) + " WHERE error('boom')"  # type: ignore[assignment]
+        spec = e.export(out)
+    finally:
+        engine_mod.restoring_select = real  # type: ignore[assignment]
+        e.close()
+    assert len(spec.warnings) == 1 and "cannot restore" in spec.warnings[0]
+    assert RunSpec.read(out).warnings == spec.warnings
+
+
+# Second review, finding 4: MAP keys are typed (TRUE never equals 1).
+def test_map_keys_are_typed() -> None:
+    con = duckdb.connect()
+    (value,) = con.execute("SELECT map([true], ['v'])").fetchone()  # type: ignore[misc]
+    assert not results_equal([(value,)], [({1: "v"},)], ordered=True, tol=None)
+    assert not results_equal([(value,)], [({1: "v"},)], ordered=False, tol=None)
+    assert results_equal([(value,)], [({True: "v"},)], ordered=False, tol=None)
+
+
+# Second review, finding 6: a run killed before any confirmation keeps its counts.
+def test_killed_before_confirmation_keeps_stats(
+    project_factory: Callable[..., Project], tmp_path: Path
+) -> None:
+    from tests.test_verify_and_api import SLOW_WHEN_SMALL
+
+    slow_always = {"sql": SLOW_WHEN_SMALL["sql"].replace("^ 4", "^ 0 * 0 + 1e15")}
+    p = project_factory(
+        fanout_tables(), fks=FANOUT_FKS, predicate=slow_always, settings={"eval_timeout_s": 60}
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    sup = run_supervised(p, run_dir, "rid", Budget(max_evals=100, wall_clock_s=3), grace_s=1)
+    assert sup.killed_reason is not None and sup.stats is None
+    stats = sup.unconfirmed_stats
+    assert stats is not None and not stats.confirmed
+    assert stats.evaluations_started == sup.evaluations_started >= 1
+    assert stats.sizes_before == {"customers": 30, "orders": 121, "lines": 400}
+
+
+# Second review, finding 7: in-process runs write the initial checkpoint too.
+def test_in_process_writes_initial_checkpoint(
+    project_factory: Callable[..., Project], tmp_path: Path
+) -> None:
+    p = project_factory(
+        {"t": ([("x", "BIGINT")], [(3,)])},
+        predicate={"sql": "SELECT count(*) > 0 FROM t WHERE x = 3"},
+        settings={"max_evals": 5},
+    )
+    res = failslice.reduce(p, out_dir=tmp_path / "run")
+    assert res.status == "reduced"
+    assert (tmp_path / "run" / "checkpoint.json").is_file()

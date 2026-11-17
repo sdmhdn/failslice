@@ -172,8 +172,11 @@ def _values_equal(a: Any, b: Any, tol: fractions.Fraction | None) -> bool:
         return (
             isinstance(a, dict)
             and isinstance(b, dict)
-            and list(a) == list(b)
-            and all(_values_equal(a[k], b[k], tol) for k in a)
+            and len(a) == len(b)
+            and all(  # keys are typed values too (a MAP key TRUE never equals 1)
+                _values_equal(ka, kb, None) and _values_equal(va, vb, tol)
+                for (ka, va), (kb, vb) in zip(a.items(), b.items(), strict=True)
+            )
         )
     if type(a) is not type(b) and not (isinstance(a, str) and isinstance(b, str)):
         return False
@@ -275,7 +278,10 @@ def _canonical_key(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return ("list", tuple(_canonical_key(v) for v in value))
     if isinstance(value, dict):
-        return ("dict", tuple((k, _canonical_key(v)) for k, v in value.items()))
+        return (
+            "dict",
+            tuple((_canonical_key(k), _canonical_key(v)) for k, v in value.items()),
+        )
     if isinstance(value, str):
         return ("str", value)
     return (type(value).__name__, value)

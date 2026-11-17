@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import runpy
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import failslice
@@ -25,3 +27,16 @@ def test_quickstart_example(tmp_path: Path) -> None:
     assert result.stats is not None
     assert result.stats.sizes_before == {"customers": 1000, "orders": 5001, "lines": 20000}
     assert result.stats.sizes_after == {"customers": 1, "orders": 2, "lines": 1}
+
+
+def test_quickstart_run_script(tmp_path: Path) -> None:
+    # The shipped run.py, as a user runs it (its own process, its own directory).
+    work = tmp_path / "quickstart"
+    shutil.copytree(EXAMPLE, work, ignore=shutil.ignore_patterns("generated", ".failslice"))
+    subprocess.run([sys.executable, "make_data.py"], cwd=work, check=True)
+    proc = subprocess.run(
+        [sys.executable, "run.py"], cwd=work, capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "check ok: True" in proc.stdout
+    assert "reduced | 1-minimal (verified) | verified" in proc.stdout

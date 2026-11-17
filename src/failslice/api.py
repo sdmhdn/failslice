@@ -211,6 +211,7 @@ def _reduce_in_process(
             budget,
             on_progress=on_progress,
             on_accept=lambda eng: write_checkpoint(eng, run_dir, run_id, reducer.snapshot()),
+            on_confirmed=lambda eng: write_checkpoint(eng, run_dir, run_id, reducer.snapshot()),
         )
         stats = reducer.run(certify=project.settings.minimality)
         if stats.confirmed:  # never export a configuration not observed TRUE

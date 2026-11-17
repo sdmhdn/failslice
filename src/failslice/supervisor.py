@@ -54,6 +54,8 @@ __all__ = [
 
 CHECKPOINT = "checkpoint.json"
 DEFAULT_GRACE_S = 5.0
+PROGRESS_DRAIN_S = 0.5
+"""How long a finished run waits for a slow progress callback before abandoning it."""
 
 
 def write_checkpoint(
@@ -178,6 +180,7 @@ class SupervisedOutcome:
     exported: bool = False
     unconfirmed_stats: ReductionStats | None = None
     """Statistics of a run that stopped before any configuration was confirmed TRUE."""
+    last_progress: ProgressEvent | None = None
 
 
 class _ProgressDispatcher:
@@ -210,7 +213,11 @@ class _ProgressDispatcher:
                 self._callback(event)
 
     def close(self, timeout_s: float) -> None:
-        """Deliver the last pending event if the callback keeps up within ``timeout_s``."""
+        """Deliver the last pending event if the callback keeps up within ``timeout_s``.
+
+        A callback that is still blocked after that is abandoned: its (daemon) thread ends
+        when the callback returns, and it receives no further events. Python cannot stop
+        a running callback, so callers should keep callbacks non-blocking."""
         with self._cond:
             self._closed = True
             self._cond.notify()
@@ -336,8 +343,10 @@ def run_supervised(
         elif kind == "eval_start":
             result.evaluations_started += 1
         elif kind == "progress":
+            event = ProgressEvent(**payload)
+            result.last_progress = event
             if dispatcher is not None:
-                dispatcher.post(ProgressEvent(**payload))
+                dispatcher.post(event)
         elif kind == "checkpoint":
             result.has_checkpoint = True
         elif kind == "determinism_error":
@@ -368,17 +377,25 @@ def run_supervised(
         )
     finally:
         if dispatcher is not None:
-            dispatcher.close(grace_s)
-    if result.unconfirmed_stats is not None:
-        result.unconfirmed_stats.evaluations_started = result.evaluations_started
+            dispatcher.close(min(grace_s, PROGRESS_DRAIN_S))
     if (
         result.stats is None
         and result.determinism_error is None
         and result.unconfirmed_stats is None
     ):
         _recover(project, run_dir, run_id, result, deadline, grace_s)
-    if result.stats is not None:
-        result.stats.evaluations_started = result.evaluations_started
+    if result.stats is None and result.unconfirmed_stats is None and result.sizes_before:
+        # Stopped (killed or crashed) before any confirmed configuration: keep what the
+        # parent observed. Completed evaluations come from the last progress event.
+        lost = ReductionStats(sizes_before=dict(result.sizes_before))
+        lost.sizes_after = dict(result.sizes_before)
+        lost.evaluations = result.last_progress.evaluations if result.last_progress else 0
+        lost.stop_reason = StopReason.KILLED if result.killed_reason else lost.stop_reason
+        lost.minimality_detail = f"run stopped: {result.killed_reason or result.error}"
+        result.unconfirmed_stats = lost
+    for stats in (result.stats, result.unconfirmed_stats):
+        if stats is not None:
+            stats.evaluations_started = result.evaluations_started
     return result
 
 

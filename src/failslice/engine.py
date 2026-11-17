@@ -572,10 +572,17 @@ class Engine:
                 for r in con.execute(f"DESCRIBE SELECT * FROM {reader}").fetchall()
             )
             restored = restoring_select(reader, exported, info.columns)
-            (diff,) = self._one(
-                f"SELECT (SELECT count(*) FROM (({kept}) EXCEPT ALL ({restored}))) + "
-                f"(SELECT count(*) FROM (({restored}) EXCEPT ALL ({kept})))"
-            )
+            try:
+                (diff,) = self._one(
+                    f"SELECT (SELECT count(*) FROM (({kept}) EXCEPT ALL ({restored}))) + "
+                    f"(SELECT count(*) FROM (({restored}) EXCEPT ALL ({kept})))"
+                )
+            except duckdb.Error as exc:  # e.g. a value that cannot be cast back
+                warnings.append(
+                    f"table {name!r}: the Parquet round trip cannot restore the source "
+                    f"types {list(info.columns)} from {list(exported)}: {exc}"
+                )
+                diff = 0
             if diff:
                 warnings.append(
                     f"table {name!r}: {diff} rows differ after the Parquet round trip "
