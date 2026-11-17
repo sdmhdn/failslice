@@ -313,7 +313,7 @@ statement and its fetch run under a watchdog re-armed with the time left
 (`portable.DeadlineConnection`); Python-side work between statements (file copies, hashing,
 inserting exemptions) is not interruptible, so there is no hard wall-clock bound on the
 finalizer; that work grows with the size of the reduced data. Bundle and run-directory
-files must be regular files (a FIFO or device would block a read).
+files must be existing regular files (a FIFO or device would block a read).
 
 - `spec.json`: the typed, versioned contract of the run directory (`RunSpec`, format 3,
   ADR 0008/0009): tables with exported and source schemas and declared primary keys, FKs,

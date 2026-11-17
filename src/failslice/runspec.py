@@ -152,11 +152,14 @@ class RunSpec(_Model):
 
     def resolve(self, run_dir: str | Path, relative: str) -> Path:
         """Resolve a file named by the spec; it must stay inside ``run_dir`` (after
-        following symlinks) and be a literal path for DuckDB's readers."""
+        following symlinks), be an existing regular file and a literal path for DuckDB's
+        readers."""
         root = Path(run_dir).resolve()
         path = (root / relative).resolve()
         if not path.is_relative_to(root):
             raise RunSpecError(f"file outside the run directory: {relative}")
+        if not path.is_file():  # regular files only: a FIFO or device would block a read
+            raise RunSpecError(f"missing or not a regular file: {relative}")
         try:
             return literal_path(path)
         except ValueError as exc:

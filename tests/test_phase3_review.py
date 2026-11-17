@@ -419,5 +419,15 @@ def test_fifo_fixtures_are_refused(run: failslice.ReductionResult, tmp_path: Pat
         portable.run_bundle(bundle)
     (run.run_dir / "tables" / "lines.parquet").unlink()
     os.mkfifo(run.run_dir / "tables" / "lines.parquet")
-    with pytest.raises(ExportError, match="not a regular file"):
+    with pytest.raises((ExportError, RunSpecError), match="not a regular file"):
         build_bundle(run.run_dir, tmp_path / "b")
+
+
+def test_replay_refuses_fifo_files(run: failslice.ReductionResult) -> None:
+    from failslice.verify import verify_run_dir
+
+    target = run.run_dir / "tables" / "orders.parquet"
+    target.unlink()
+    os.mkfifo(target)
+    report = verify_run_dir(run.run_dir)
+    assert report.status == "replay-failed" and "not a regular file" in report.detail
