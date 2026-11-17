@@ -301,3 +301,19 @@ def test_cancelled_report_mentions_finished_replay(run: failslice.ReductionResul
     _finish(ctx, dataclasses.replace(run, manifest=None), time.monotonic() + 60, cancel)
     text = (run.run_dir / "report.md").read_text(encoding="utf-8")
     assert "after the independent replay had finished (verified)" in text
+
+
+def test_cancelled_report_with_skipped_replay(run: failslice.ReductionResult) -> None:
+    from failslice.api import _finish
+    from failslice.artifacts import RunContext
+
+    cancel = threading.Event()
+    cancel.set()
+    assert run.manifest is not None
+    ctx = RunContext(run.run_dir.name, run.run_dir, "t", time.monotonic(), run.manifest.config, {})
+    skipped = dataclasses.replace(
+        run, manifest=None, verification=VerificationReport("unverified", detail="no time left")
+    )
+    _finish(ctx, skipped, time.monotonic() + 60, cancel)
+    text = (run.run_dir / "report.md").read_text(encoding="utf-8")
+    assert "did not complete (skipped or timed out)" in text and "had finished" not in text

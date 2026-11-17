@@ -59,12 +59,18 @@ def render_report(manifest: Manifest, explanation: Explanation | None) -> str:
     out: list[str] = [f"# FailSlice report: run {m.run_id}", ""]
     if m.status == "cancelled":
         replay = (m.verification or {}).get("status")
-        history = (
-            f"it was cancelled after the independent replay had finished ({replay}), while "
-            "artifacts were being written, so some artifacts may be missing"
-            if replay and replay != "cancelled"
-            else "nothing was recovered, replayed or verified"
-        )
+        if replay and replay not in ("cancelled", "unverified"):
+            history = (
+                f"it was cancelled after the independent replay had finished ({replay}), "
+                "while artifacts were being written, so some artifacts may be missing"
+            )
+        elif replay == "unverified":
+            history = (
+                "the independent replay did not complete (skipped or timed out), and it was "
+                "cancelled while artifacts were being written"
+            )
+        else:
+            history = "nothing was recovered, replayed or verified"
         out += [
             f"**Cancelled.** The run was cancelled by the caller; {history}. "
             "No reproducer is claimed.",
