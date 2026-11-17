@@ -234,7 +234,8 @@ Each run writes a directory (default `.failslice/runs/<run-id>/` next to the con
 ### The generated test
 
 `pytest/` (or any directory you pick with `failslice export-test --out`) contains
-`test_<name>.py`, `query.sql`, `reproducer.json`, `fixtures/` and
+`test_<name>.py` (default name `reproducer_<hash of the fixtures and polarity>`, so several
+bundles can be collected in one pytest run), `query.sql`, `reproducer.json`, `fixtures/` and
 `_failslice_portable.py`, an exact copy of the module FailSlice itself uses to classify
 outcomes. It needs only `pytest` and `duckdb`, never reads your original data, and
 checks the fixture hashes, the schemas and referential integrity before running the

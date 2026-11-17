@@ -10,13 +10,14 @@ manifest. ``manifest.json`` is written atomically and last.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import hashlib
 import json
 import os
 import platform
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -211,30 +212,43 @@ class _Steps:
         return True
 
 
-def write_csv(run_dir: Path, spec: RunSpec, timeout_s: float | None) -> None:
-    """Write ``csv/<t>.csv`` (UTF-8, header, ``\\N`` for NULL, non-NULL strings quoted)."""
+def write_csv(run_dir: Path, spec: RunSpec, deadline: float | None) -> None:
+    """Write ``csv/<t>.csv`` (UTF-8, header, ``\\N`` for NULL, non-NULL strings quoted)
+    under one watchdog that fires at ``deadline``."""
     out = run_dir / CSV_DIR
     out.mkdir(exist_ok=True)
     con = duckdb.connect(":memory:")
     try:
-        for name, entry in spec.tables.items():
-            src = spec.resolve(run_dir, entry.file)
-            dest = out / f"{name}.csv"
-            text_cols = [c for c, t in entry.columns if t == "VARCHAR"]
-            quote = f", FORCE_QUOTE ({', '.join(_q(c) for c in text_cols)})" if text_cols else ""
-            sql = (
-                f"COPY (SELECT * FROM read_parquet({_lit(str(src))})) TO {_lit(str(dest))} "
-                f"(FORMAT csv, HEADER true, NULLSTR '\\N'{quote})"
-            )
-            if timeout_s is None:
-                con.execute(sql)
-            else:
-                with _Watchdog(con, max(timeout_s, 0.001)) as dog:
-                    con.execute(sql)
-                if dog.fired:  # pragma: no cover - timing dependent
-                    raise TimeoutError("CSV export exceeded the deadline")
+        with _deadline_watchdog(con, deadline) as dog:
+            _write_csv(con, run_dir, spec, out)
+        if dog is not None and dog.fired:
+            raise TimeoutError("CSV export exceeded the deadline")
     finally:
         con.close()
+
+
+@contextlib.contextmanager
+def _deadline_watchdog(
+    con: duckdb.DuckDBPyConnection, deadline: float | None
+) -> Iterator[_Watchdog | None]:
+    """Interrupt ``con`` at ``deadline`` (absolute ``time.monotonic()`` value)."""
+    if deadline is None:
+        yield None
+        return
+    with _Watchdog(con, max(deadline - time.monotonic(), 0.001)) as dog:
+        yield dog
+
+
+def _write_csv(con: duckdb.DuckDBPyConnection, run_dir: Path, spec: RunSpec, out: Path) -> None:
+    for name, entry in spec.tables.items():
+        src = spec.resolve(run_dir, entry.file)
+        dest = out / f"{name}.csv"
+        text_cols = [c for c, t in entry.columns if t == "VARCHAR"]
+        quote = f", FORCE_QUOTE ({', '.join(_q(c) for c in text_cols)})" if text_cols else ""
+        con.execute(
+            f"COPY (SELECT * FROM read_parquet({_lit(str(src))})) TO {_lit(str(dest))} "
+            f"(FORMAT csv, HEADER true, NULLSTR '\\N'{quote})"
+        )
 
 
 def _q(name: str) -> str:
@@ -290,7 +304,7 @@ def finalize(
     spec = result.spec
     steps = _Steps(deadline)
     no_spec = None if spec is not None else "no exported reproducer"
-    steps.run("csv", lambda: write_csv(run_dir, spec, steps.remaining()), skip=no_spec)  # type: ignore[arg-type]
+    steps.run("csv", lambda: write_csv(run_dir, spec, deadline), skip=no_spec)  # type: ignore[arg-type]
     verified = result.verification is not None and result.verification.ok
     steps.run(
         "pytest",
@@ -300,7 +314,7 @@ def finalize(
     explanation: list[Explanation] = []
 
     def do_explain() -> None:
-        explanation.append(explain(run_dir, limit=explain_limit))
+        explanation.append(explain(run_dir, limit=explain_limit, deadline=deadline))
         (run_dir / EXPLAIN_FILE).write_text(explanation[0].model_dump_json(indent=2) + "\n")
 
     steps.run("explain", do_explain, skip=no_spec)
@@ -351,14 +365,16 @@ def _manifest(
     ratio = round(after / before, 6) if before and after is not None else None
     stats_data: dict[str, Any] | None = None
     if stats is not None:
+        known = stats.complete
         stats_data = {
+            "complete": known,
             "evaluations": stats.evaluations,
             "evaluations_started": stats.evaluations_started,
-            "outcomes": dict(stats.outcomes),
-            "error_classes": dict(stats.error_classes),
-            "cache_hits": stats.cache_hits,
-            "accepted": stats.accepted,
-            "sweeps": stats.sweeps,
+            "outcomes": dict(stats.outcomes) if known else None,
+            "error_classes": dict(stats.error_classes) if known else None,
+            "cache_hits": stats.cache_hits if known else None,
+            "accepted": stats.accepted if known else None,
+            "sweeps": stats.sweeps if known else None,
             "stop_reason": stats.stop_reason.value,
             "reduction_elapsed_s": round(stats.elapsed_s, 3),
         }

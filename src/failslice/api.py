@@ -8,10 +8,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from failslice.artifacts import Manifest, RunContext, finalize, minimality_label
-from failslice.config import ConfigError, Project
+from failslice.config import ConfigError, Project, resolve_inside
 from failslice.engine import Engine
 from failslice.predicate import Outcome
 from failslice.reducer import (
@@ -60,6 +60,8 @@ class CheckReport:
     outcomes: list[Outcome] = field(default_factory=list)
     deterministic: bool = False
     problems: list[str] = field(default_factory=list)
+    stop: Literal["killed", "crashed"] | None = None
+    """Set when an isolated check did not finish: killed at its deadline or crashed."""
 
 
 def check(project: Project, *, isolate: bool = False) -> CheckReport:
@@ -76,8 +78,14 @@ def check(project: Project, *, isolate: bool = False) -> CheckReport:
     return check_in_process(project)
 
 
-def check_in_process(project: Project) -> CheckReport:
-    """The body of :func:`check` (validation already done)."""
+def check_in_process(
+    project: Project,
+    *,
+    before_eval: Callable[[], None] | None = None,
+    on_progress: Callable[[ProgressEvent], None] | None = None,
+) -> CheckReport:
+    """The body of :func:`check` (validation already done). The callbacks let a
+    supervisor time every evaluation."""
     report = CheckReport(ok=False)
     engine = Engine(project)
     try:
@@ -88,7 +96,12 @@ def check_in_process(project: Project) -> CheckReport:
                 "source": info.source,
             }
         report.orphans = dict(engine.orphan_counts)
-        reducer = Reducer(engine, Budget(max_evals=4, wall_clock_s=project.settings.wall_clock_s))
+        reducer = Reducer(
+            engine,
+            Budget(max_evals=4, wall_clock_s=project.settings.wall_clock_s),
+            before_eval=before_eval,
+            on_progress=on_progress,
+        )
         try:
             report.outcomes = reducer.check_determinism()
             report.deterministic = True
@@ -119,6 +132,8 @@ class ReductionResult:
     notes: list[str] = field(default_factory=list)
     spec: RunSpec | None = None
     """The exported reproducer's contract (``spec.json``), if one was exported."""
+    failure: Literal["killed", "crashed"] | None = None
+    """Isolated runs: the reduction process was killed (deadline, unresponsive) or crashed."""
     manifest: Manifest | None = None
     """The run summary (``manifest.json``), written last."""
 
@@ -133,7 +148,11 @@ class ReductionResult:
 def _new_run_dir(project: Project, out_dir: str | Path | None) -> tuple[Path, str]:
     run_id = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
     if out_dir is None:
-        run_dir = project.base_dir / ".failslice" / "runs" / run_id
+        # Resolved like every other path, so a symlinked .failslice cannot redirect writes
+        # outside the allowed root.
+        run_dir = resolve_inside(
+            project.base_dir, Path(".failslice") / "runs" / run_id, project.root
+        )
     else:
         run_dir = Path(out_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -166,6 +185,7 @@ def reduce(
     budget = Budget(max_evals=settings.max_evals, wall_clock_s=settings.wall_clock_s - reserve)
     notes: list[str] = []
     stats: ReductionStats | None
+    failure: Literal["killed", "crashed"] | None = None
     if isolate:
         sup = run_supervised(
             project,
@@ -176,11 +196,15 @@ def reduce(
             on_progress=on_progress,
         )
         stats = _supervised_stats(sup, notes)
+        if sup.killed_reason:
+            failure = "killed"
+        elif sup.error:
+            failure = "crashed"
     else:
         stats = _reduce_in_process(project, run_dir, run_id, budget, on_progress)
     if stats is None or not stats.confirmed:
         notes.append("stopped before any configuration was confirmed TRUE")
-        result = ReductionResult(run_dir, "no-candidate", stats, None, notes)
+        result = ReductionResult(run_dir, "no-candidate", stats, None, notes, failure=failure)
         result.manifest = finalize(context, result, deadline=deadline)
         return result
     remaining = deadline - time.monotonic()
@@ -192,7 +216,7 @@ def reduce(
         verification = verify_in_subprocess(run_dir, timeout_s=remaining)
     spec = RunSpec.read(run_dir)
     notes.extend(spec.warnings)
-    result = ReductionResult(run_dir, "reduced", stats, verification, notes, spec)
+    result = ReductionResult(run_dir, "reduced", stats, verification, notes, spec, failure=failure)
     result.manifest = finalize(context, result, deadline=deadline)
     return result
 

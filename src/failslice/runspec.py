@@ -14,15 +14,23 @@ the exported Parquet file. They differ where Parquet has no equivalent type (e.g
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from failslice.config import ExpectPredicate, RaisesPredicate, SqlPredicate, literal_path
+from failslice.config import (
+    RESERVED_PREFIX,
+    ExpectPredicate,
+    ForeignKey,
+    RaisesPredicate,
+    SqlPredicate,
+    literal_path,
+)
 
 __all__ = [
     "SPEC_FILE",
@@ -36,6 +44,7 @@ __all__ = [
 ]
 
 SPEC_FILE = "spec.json"
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FORMAT = 3
 
 Column = tuple[str, str]
@@ -106,6 +115,20 @@ class RunSpec(_Model):
     """The effective run settings (seed, budgets, ...)."""
     input_orphans: dict[str, int] = Field(default_factory=dict)
     """Input orphans per FK edge in the full input (``child.col -> parent.col`` -> rows)."""
+
+    @model_validator(mode="after")
+    def _names_are_identifiers(self) -> RunSpec:
+        """Table names become file names and SQL identifiers: plain identifiers only, and
+        every foreign key must parse and refer to listed tables (a tampered spec must not
+        steer file writes or SQL)."""
+        for name in self.tables:
+            if not _IDENT.match(name) or name.lower().startswith(RESERVED_PREFIX):
+                raise ValueError(f"invalid table name {name!r}")
+        for text in self.foreign_keys:
+            fk = ForeignKey.parse(text)
+            if fk.child not in self.tables or fk.parent not in self.tables:
+                raise ValueError(f"foreign key {text!r} refers to an unknown table")
+        return self
 
     def write(self, run_dir: Path) -> None:
         """Write ``spec.json`` into ``run_dir``."""

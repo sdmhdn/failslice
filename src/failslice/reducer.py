@@ -38,6 +38,8 @@ class StopReason(StrEnum):
     WALL_CLOCK = "wall_clock"
     KILLED = "killed"
     """The supervisor killed the reduction process (hard deadline or unresponsive engine)."""
+    CRASHED = "crashed"
+    """The reduction process failed with an error (or died) before reporting."""
 
 
 class Minimality(StrEnum):
@@ -110,6 +112,10 @@ class ReductionStats:
     confirmed: bool = False
     """Whether the final configuration was observed TRUE (determinism check or an
     accepted candidate). False only if a budget stopped the run before that."""
+    complete: bool = True
+    """False when the counters were reconstructed by the supervisor after the reduction
+    process stopped without reporting: per-outcome counts, cache hits, acceptances and
+    sweeps are then unknown (reported as null), not zero."""
     evaluations_started: int | None = None
     """Predicate executions started, as counted by the supervisor (isolated runs only).
     Can exceed ``evaluations`` when the reduction process was stopped mid-evaluation or

@@ -603,10 +603,14 @@ def _inside(root: Path, relative: str) -> Path:
     return path
 
 
-def run_bundle(bundle_dir: str | Path) -> BundleResult:
+def run_bundle(bundle_dir: str | Path, *, timeout_s: float | None = None) -> BundleResult:
     """Rebuild the reduced tables of a pytest bundle in a fresh in-memory DuckDB database
     (only from the bundle's own files), check fixture hashes, schemas and referential
-    integrity, then run ``query.sql`` and classify the outcome."""
+    integrity, then run ``query.sql`` and classify the outcome.
+
+    The fixture files are read as they are; external access is then switched off before
+    any expression from ``reproducer.json`` (type restoration) or the query runs.
+    ``timeout_s`` overrides the bundle's evaluation timeout."""
     root = Path(bundle_dir).resolve()
     result = BundleResult()
     spec = json.loads((root / "reproducer.json").read_text(encoding="utf-8"))
@@ -628,14 +632,18 @@ def run_bundle(bundle_dir: str | Path) -> BundleResult:
     try:
         con.execute(f"SET threads = {int(spec['threads'])}")
         counts: dict[str, int] = {}
-        for table in spec["tables"]:
+        con.execute("CREATE SCHEMA __fs_raw")
+        for i, table in enumerate(spec["tables"]):
             source = f"read_parquet({_lit(str(_inside(root, table['file'])))})"
-            exprs = ", ".join(table["select"])
-            con.execute(f"CREATE TABLE {_q(table['name'])} AS SELECT {exprs} FROM {source}")
+            con.execute(f"CREATE TABLE __fs_raw.t{i} AS SELECT * FROM {source}")
         exempt_rows = con.execute(
             f"SELECT edge, row_index FROM read_parquet({_lit(str(_inside(root, spec['orphans'])))})"
         ).fetchall()
         con.execute("SET enable_external_access = false")
+        for i, table in enumerate(spec["tables"]):
+            exprs = ", ".join(table["select"])
+            con.execute(f"CREATE TABLE {_q(table['name'])} AS SELECT {exprs} FROM __fs_raw.t{i}")
+        con.execute("DROP SCHEMA __fs_raw CASCADE")
         for table in spec["tables"]:
             got = [
                 [str(r[0]), str(r[1])]
@@ -668,7 +676,8 @@ def run_bundle(bundle_dir: str | Path) -> BundleResult:
             flags=int(p.get("flags", 0)),
             error_class=p.get("error_class"),
         )
-        result.outcome = run_check(con, check, float(spec["eval_timeout_s"]))
+        timeout = float(spec["eval_timeout_s"]) if timeout_s is None else timeout_s
+        result.outcome = run_check(con, check, timeout)
         return result
     finally:
         con.close()

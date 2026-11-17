@@ -400,7 +400,8 @@ def run_supervised(
         lost = ReductionStats(sizes_before=dict(result.sizes_before))
         lost.sizes_after = dict(result.sizes_before)
         lost.evaluations = result.last_progress.evaluations if result.last_progress else 0
-        lost.stop_reason = StopReason.KILLED if result.killed_reason else lost.stop_reason
+        lost.stop_reason = StopReason.KILLED if result.killed_reason else StopReason.CRASHED
+        lost.complete = False
         lost.elapsed_s = time.monotonic() - start  # as measured by the parent
         lost.minimality_detail = (
             f"run stopped: {result.killed_reason or result.error}; per-outcome counts are "
@@ -469,7 +470,12 @@ def _check_child(project: Project, conn: Connection) -> None:
     try:
         from failslice.api import check_in_process  # noqa: PLC0415 - api imports this module
 
-        conn.send(("check", check_in_process(project)))
+        report = check_in_process(
+            project,
+            before_eval=lambda: conn.send(("eval_start", None)),
+            on_progress=lambda ev: conn.send(("progress", None)),
+        )
+        conn.send(("check", report))
     except ConfigError as exc:
         with contextlib.suppress(Exception):
             conn.send(("config_error", str(exc)))
@@ -492,11 +498,14 @@ def run_check_supervised(project: Project, *, grace_s: float = DEFAULT_GRACE_S) 
         return kind in {"check", "config_error", "crash"}
 
     deadline = time.monotonic() + project.settings.wall_clock_s + grace_s
-    kill = _pump(_check_child, (project,), deadline, on_event, None, grace_s)
+    limit = project.settings.eval_timeout_s + grace_s
+    kill = _pump(_check_child, (project,), deadline, on_event, limit, grace_s)
     if "config_error" in got:
         raise ConfigError(got["config_error"])
     if "check" in got:
         report: CheckReport = got["check"]
         return report
-    problem = got.get("crash") or (f"check stopped: {kill}" if kill else "check process failed")
-    return CheckReport(ok=False, problems=[str(problem)])
+    if kill:
+        return CheckReport(ok=False, problems=[f"check stopped: {kill}"], stop="killed")
+    problem = got.get("crash") or "check process failed"
+    return CheckReport(ok=False, problems=[str(problem)], stop="crashed")

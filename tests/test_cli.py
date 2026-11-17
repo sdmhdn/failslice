@@ -92,7 +92,7 @@ def test_reduce_verify_explain_export(project: Project, tmp_path: Path) -> None:
     code, doc = _json(
         ["export-test", str(run_dir), "--out", str(out), "--root", str(project.base_dir)]
     )
-    assert code == 0 and (out / "test_reproducer.py").is_file()
+    assert code == 0 and len(list(out.glob("test_reproducer_*.py"))) == 1
     code, doc = _json(
         ["export-test", str(run_dir), "--out", str(out), "--root", str(project.base_dir)]
     )
@@ -244,10 +244,10 @@ def test_reduce_exit_mapping() -> None:
 
     base = ReductionResult(Path("x"), "reduced", ReductionStats({}), VerificationReport("verified"))
     assert _reduce_exit(base) == ("reduced", "ok")
-    assert _reduce_exit(dataclasses.replace(base, status="no-candidate", stats=None)) == (
-        "error",
-        "error",
-    )
+    crashed = dataclasses.replace(base, status="no-candidate", failure="crashed")
+    assert _reduce_exit(crashed) == ("error", "error")
+    killed = dataclasses.replace(base, status="no-candidate", stats=None, failure="killed")
+    assert _reduce_exit(killed) == ("no-candidate", "inconclusive")
     unverified = dataclasses.replace(base, verification=VerificationReport("unverified"))
     assert _reduce_exit(unverified) == ("unverified", "inconclusive")
     failed = dataclasses.replace(base, verification=VerificationReport("integrity-failed"))

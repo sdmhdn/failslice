@@ -19,6 +19,7 @@ from typing import Annotated, Any, Literal, NoReturn
 import typer
 from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+from typer.exceptions import TyperException
 
 from failslice import __version__
 from failslice.api import CheckReport, ReductionResult, check, reduce, verify
@@ -241,6 +242,7 @@ def _check_data(report: CheckReport) -> dict[str, Any]:
         "orphans": report.orphans,
         "outcomes": [asdict(o) for o in report.outcomes],
         "problems": report.problems,
+        "stop": report.stop,
     }
 
 
@@ -271,11 +273,19 @@ def check_cmd(
             for p in report.problems:
                 _err.print(f"problem: {p}")
 
+        if report.ok:
+            status, kind = "ok", "ok"
+        elif report.stop == "killed":
+            status, kind = "stopped", "inconclusive"
+        elif report.stop == "crashed":
+            status, kind = "error", "error"
+        else:
+            status, kind = "failed", "failed"
         _emit(
             "check",
             as_json=as_json,
-            status="ok" if report.ok else "failed",
-            exit_kind="ok" if report.ok else "failed",
+            status=status,
+            exit_kind=kind,
             data=_check_data(report),
             text=text,
         )
@@ -287,7 +297,7 @@ def check_cmd(
 def _reduce_exit(result: ReductionResult) -> tuple[str, str]:
     """(status, exit kind) for a finished reduction, from the recorded reason."""
     if result.status == "no-candidate":
-        if result.stats is None:
+        if result.failure == "crashed":
             return "error", "error"
         return "no-candidate", "inconclusive"
     v = result.verification
@@ -466,7 +476,10 @@ def verify_cmd(
 def export_test(
     run_dir: Annotated[Path, typer.Argument(help="A verified run directory.")],
     out: Annotated[Path, typer.Option(help="New directory for the pytest bundle.")],
-    name: Annotated[str, typer.Option(help="Test name ([a-z_][a-z0-9_]*).")] = "reproducer",
+    name: Annotated[
+        str | None,
+        typer.Option(help="Test name ([a-z_][a-z0-9_]*); default reproducer_<hash>."),
+    ] = None,
     expect: Annotated[
         str,
         typer.Option(
@@ -543,9 +556,43 @@ def explain_cmd(
     _guard("explain", as_json, debug, body)
 
 
-def main() -> None:
-    """Console-script entry point."""
-    app()
+def main(argv: list[str] | None = None) -> None:
+    """Console-script entry point. Parser errors honour ``--json`` too (exit code 2);
+    ``--help`` and ``--version`` always print text."""
+    args = sys.argv[1:] if argv is None else argv
+    try:
+        rv = app(args=args, prog_name="failslice", standalone_mode=False)
+    except typer.Exit as exc:
+        raise SystemExit(exc.exit_code) from None
+    except typer.Abort:
+        _err.print("interrupted")
+        raise SystemExit(EXIT_CODES["interrupted"]) from None
+    except TyperException as exc:
+        if "--json" in args:
+            command = next((a for a in args if not a.startswith("-")), None)
+            doc = {
+                "format": JSON_FORMAT,
+                "command": command,
+                "status": "error",
+                "exit_code": EXIT_CODES["rejected"],
+                "run_dir": None,
+                "data": None,
+                "error": {"code": "usage", "message": _usage_message(exc)},
+            }
+            sys.stdout.write(json.dumps(doc) + "\n")
+        else:
+            show = getattr(exc, "show", None)
+            if callable(show):
+                show()
+            else:  # pragma: no cover - every parser error has show()
+                _err.print(f"error: {_usage_message(exc)}")
+        raise SystemExit(EXIT_CODES["rejected"]) from None
+    raise SystemExit(rv if isinstance(rv, int) else 0)
+
+
+def _usage_message(exc: Exception) -> str:
+    fmt = getattr(exc, "format_message", None)
+    return str(fmt()) if callable(fmt) else str(exc)
 
 
 if __name__ == "__main__":  # pragma: no cover

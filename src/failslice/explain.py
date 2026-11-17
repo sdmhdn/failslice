@@ -10,6 +10,8 @@ column the predicate depends on, and never claims a root cause.
 
 from __future__ import annotations
 
+import contextlib
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +19,7 @@ import duckdb
 from pydantic import BaseModel, ConfigDict
 
 from failslice.config import ForeignKey
+from failslice.portable import _Watchdog
 from failslice.runspec import RunSpec, restoring_select
 
 __all__ = ["Explanation", "ForeignKeyObservation", "KeyObservation", "TableObservation", "explain"]
@@ -60,7 +63,7 @@ class ForeignKeyObservation(_Model):
     input_orphans: int
     """Surviving rows exempted as input orphans (their parent was missing in the input)."""
     duplicate_parent_keys: int
-    """Referenced key values with more than one parent row."""
+    """Key values referenced by a child row that have more than one parent row."""
     join_pairs: int
     keys: tuple[KeyObservation, ...]
     """Keys with the most join pairs (bounded by ``limit``)."""
@@ -120,8 +123,9 @@ def _lit(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-def explain(run_dir: str | Path, *, limit: int = 20) -> Explanation:
-    """Compute observations on the reduced tables of ``run_dir``."""
+def explain(run_dir: str | Path, *, limit: int = 20, deadline: float | None = None) -> Explanation:
+    """Compute observations on the reduced tables of ``run_dir``; the queries are
+    interrupted at ``deadline`` (absolute ``time.monotonic()``), raising ``TimeoutError``."""
     root = Path(run_dir).resolve()
     spec = RunSpec.read(root)
     con = duckdb.connect(
@@ -129,26 +133,35 @@ def explain(run_dir: str | Path, *, limit: int = 20) -> Explanation:
         config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
     )
     try:
-        for name, entry in spec.tables.items():
-            source = f"read_parquet({_lit(str(spec.resolve(root, entry.file)))})"
-            con.execute(
-                f"CREATE TABLE {_q(name)} AS "
-                + restoring_select(source, entry.columns, entry.source_columns)
-            )
-        orphans = spec.resolve(root, spec.orphans_file)
-        con.execute(
-            f"CREATE TABLE __fs_orphans AS SELECT edge FROM read_parquet({_lit(str(orphans))})"
+        timer = (
+            _Watchdog(con, max(deadline - time.monotonic(), 0.001))
+            if deadline is not None
+            else contextlib.nullcontext(None)
         )
-        con.execute("SET enable_external_access = false")
-        tables = [
-            _table(con, name, entry.primary_key, entry.source_columns)
-            for name, entry in spec.tables.items()
-        ]
-        fks = [
-            _foreign_key(con, i, ForeignKey.parse(text), limit)
-            for i, text in enumerate(spec.foreign_keys)
-        ]
-        return Explanation(tables=tuple(tables), foreign_keys=tuple(fks))
+        with timer as dog:
+            for name, entry in spec.tables.items():
+                source = f"read_parquet({_lit(str(spec.resolve(root, entry.file)))})"
+                con.execute(
+                    f"CREATE TABLE {_q(name)} AS "
+                    + restoring_select(source, entry.columns, entry.source_columns)
+                )
+            orphans = spec.resolve(root, spec.orphans_file)
+            con.execute(
+                f"CREATE TABLE __fs_orphans AS SELECT edge FROM read_parquet({_lit(str(orphans))})"
+            )
+            con.execute("SET enable_external_access = false")
+            tables = [
+                _table(con, name, entry.primary_key, entry.source_columns)
+                for name, entry in spec.tables.items()
+            ]
+            fks = [
+                _foreign_key(con, i, ForeignKey.parse(text), limit)
+                for i, text in enumerate(spec.foreign_keys)
+            ]
+            result = Explanation(tables=tuple(tables), foreign_keys=tuple(fks))
+        if dog is not None and dog.fired:
+            raise TimeoutError("explain exceeded the deadline")
+        return result
     finally:
         con.close()
 
@@ -203,8 +216,9 @@ def _foreign_key(
     (orphans,) = _one(con, f"SELECT count(*) FROM __fs_orphans WHERE edge = {edge}")
     (dup_parents,) = _one(
         con,
-        f"SELECT count(*) FROM (SELECT {pc} FROM {p} WHERE {pc} IS NOT NULL "
-        f"GROUP BY {pc} HAVING count(*) > 1)",
+        f"SELECT count(*) FROM (SELECT {pc} AS key FROM {p} WHERE {pc} IS NOT NULL "
+        f"GROUP BY {pc} HAVING count(*) > 1) d WHERE EXISTS "
+        f"(SELECT 1 FROM {c} x WHERE x.{cc} = d.key)",
     )
     per_key = (
         f"SELECT k.key, k.children, coalesce(pp.parents, 0) AS parents, "

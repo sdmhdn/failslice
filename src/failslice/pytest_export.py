@@ -5,8 +5,8 @@ Layout of a bundle directory::
     test_<name>.py            the test (polarity is one constant at the top)
     query.sql                 the predicate query; edit it after fixing your pipeline
     reproducer.json           predicate form and parameters, schemas, FKs, fixture hashes
-    fixtures/<table>.parquet  the reduced tables
-    fixtures/orphans.parquet  input orphans that are allowed to dangle
+    fixtures/tables/<table>.parquet  the reduced tables
+    fixtures/orphans.parquet         input orphans that are allowed to dangle
     _failslice_portable.py    byte-identical copy of failslice/portable.py
 
 The bundle needs only ``pytest`` and ``duckdb``. It never reads the original inputs and
@@ -15,6 +15,7 @@ contains no absolute paths, timestamps or run ids, so the same run gives the sam
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,7 +29,7 @@ from typing import Literal
 import duckdb
 import yaml
 
-from failslice import portable
+from failslice import __version__, portable
 from failslice.config import ExpectPredicate, RaisesPredicate, SqlPredicate, literal_path
 from failslice.predicate import check_for, normalize_expected
 from failslice.runspec import RunSpec, restoring_exprs
@@ -153,7 +154,7 @@ def build_bundle(
     run_dir: str | Path,
     dest: str | Path,
     *,
-    name: str = "reproducer",
+    name: str | None = None,
     expect: Polarity = "fails",
     deadline: float | None = None,
 ) -> PytestExport:
@@ -162,8 +163,13 @@ def build_bundle(
     The bundle is staged next to ``dest`` and renamed into place only after it passed a
     self-check (``run_bundle`` must classify the predicate as TRUE); ``dest`` must not
     exist. The caller is responsible for having verified the run directory.
+
+    ``name`` defaults to ``reproducer_<hash>``, where the hash covers the fixtures and the
+    polarity: pytest's default import mode needs distinct test-module names when several
+    bundles are collected together.
     """
-    _check_name(name)
+    if name is not None:
+        _check_name(name)
     if expect not in ("fails", "passes"):
         raise ExportError(f"expect must be 'fails' or 'passes', not {expect!r}")
     root = Path(run_dir).resolve()
@@ -175,11 +181,13 @@ def build_bundle(
     stage = target.with_name(f".{target.name}.tmp-{secrets.token_hex(4)}")
     stage.mkdir(parents=True)
     try:
-        (stage / "fixtures").mkdir()
+        (stage / "fixtures" / "tables").mkdir(parents=True)
         tables = []
         fixtures: dict[str, str] = {}
         for tname, entry in spec.tables.items():
-            rel = f"fixtures/{tname}.parquet"
+            rel = f"fixtures/tables/{tname}.parquet"
+            if not (stage / rel).resolve().is_relative_to(stage.resolve()):  # pragma: no cover
+                raise ExportError(f"invalid table name {tname!r}")  # RunSpec validates names
             shutil.copyfile(spec.resolve(root, entry.file), stage / rel)
             fixtures[rel] = portable._sha256(stage / rel)
             tables.append(
@@ -197,6 +205,9 @@ def build_bundle(
         for text in spec.foreign_keys:
             child, parent = (part.strip() for part in text.split("->"))
             fks.append([*child.split(".", 1), *parent.split(".", 1)])
+        if name is None:
+            digest = json.dumps([sorted(fixtures.items()), expect]).encode()
+            name = "reproducer_" + hashlib.sha256(digest).hexdigest()[:8]
         reproducer = {
             "format": portable.BUNDLE_FORMAT,
             "portable_version": portable.PORTABLE_VERSION,
@@ -222,7 +233,7 @@ def build_bundle(
         test_file = stage / f"test_{name}.py"
         test_file.write_text(
             _TEST_TEMPLATE.format(
-                version=spec.failslice_version,
+                version=__version__,
                 expect=expect,
                 name=name,
                 portable_file=PORTABLE_FILE,
@@ -230,7 +241,11 @@ def build_bundle(
             encoding="utf-8",
         )
         _check_deadline(deadline)
-        result = portable.run_bundle(stage)
+        left = None if deadline is None else deadline - time.monotonic()
+        result = portable.run_bundle(
+            stage,
+            timeout_s=None if left is None else max(min(left, spec.settings.eval_timeout_s), 0.001),
+        )
         if result.problems or result.violations or result.outcome is None:
             raise ExportError(f"bundle self-check failed: {result.problems or result.violations}")
         if not result.outcome.is_true:
@@ -238,12 +253,18 @@ def build_bundle(
                 f"bundle self-check: the predicate is {result.outcome.kind.value} on the "
                 f"bundle ({result.outcome.detail}); the run directory does not reproduce"
             )
+        _check_deadline(deadline)
         os.rename(stage, target)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
     files = tuple(sorted(p for p in target.rglob("*") if p.is_file()))
-    return PytestExport(target, target / f"test_{name}.py", expect, files)
+    return PytestExport(target, test_file_name(target, name), expect, files)
+
+
+def test_file_name(directory: Path, name: str) -> Path:
+    """Path of a bundle's test module."""
+    return directory / f"test_{name}.py"
 
 
 def _check_deadline(deadline: float | None) -> None:

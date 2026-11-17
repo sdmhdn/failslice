@@ -349,6 +349,11 @@ DuckDB work under the watchdog; a skipped or failed step is recorded in the mani
   (`EXPECT = "passes"`); ERROR and TIMEOUT fail either way. The bundle is staged, checked
   with `run_bundle` (it must classify TRUE) and renamed into place; an existing
   destination is refused. No absolute paths, timestamps or run ids are written into it.
+  Table fixtures live in `fixtures/tables/` (so a table named `orphans` cannot collide);
+  the default test name is `reproducer_<hash of fixtures and polarity>`. `reproducer.json`
+  is data, but its restoring expressions run only after external access is disabled, and
+  the generated Python embeds only FailSlice's own version and validated identifiers.
+  `RunSpec` accepts only identifier table names and FKs between listed tables.
 - `checkpoint.json`: last confirmed configuration and its statistics.
 
 ## 13. Safety model (ADR 0007)

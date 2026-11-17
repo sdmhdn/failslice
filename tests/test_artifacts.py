@@ -75,7 +75,9 @@ def test_manifest_and_inventory(fanout_run: failslice.ReductionResult) -> None:
     assert m.stats is not None and m.stats["evaluations"] == res.stats.evaluations  # type: ignore[union-attr]
     roles = {a.path: a.role for a in m.artifacts}
     assert roles["tables/orders.parquet"] == "table" and roles["csv/orders.csv"] == "csv"
-    assert roles["pytest/test_reproducer.py"] == "pytest" and roles["report.md"] == "report"
+    test_files = [p for p in roles if p.startswith("pytest/test_reproducer_")]
+    assert len(test_files) == 1 and roles[test_files[0]] == "pytest"
+    assert roles["report.md"] == "report"
     assert "manifest.json" not in roles and "checkpoint.json" not in roles
     for a in m.artifacts:  # hashes and sizes describe the files on disk
         data = (res.run_dir / a.path).read_bytes()
@@ -262,20 +264,21 @@ def test_codec_rejects_inexact_values() -> None:
 def test_bundle_is_self_contained_and_passes(fanout_run: failslice.ReductionResult) -> None:
     bundle = fanout_run.run_dir / "pytest"
     files = sorted(p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if p.is_file())
+    (test_name,) = [f for f in files if f.startswith("test_reproducer_")]
+    files.remove(test_name)
     assert files == [
         "_failslice_portable.py",
-        "fixtures/customers.parquet",
-        "fixtures/lines.parquet",
-        "fixtures/orders.parquet",
         "fixtures/orphans.parquet",
+        "fixtures/tables/customers.parquet",
+        "fixtures/tables/lines.parquet",
+        "fixtures/tables/orders.parquet",
         "query.sql",
         "reproducer.json",
-        "test_reproducer.py",
     ]
     assert (bundle / "_failslice_portable.py").read_bytes() == Path(portable.__file__).read_bytes()
-    text = "".join((bundle / f).read_text() for f in ("test_reproducer.py", "reproducer.json"))
+    text = "".join((bundle / f).read_text() for f in (test_name, "reproducer.json"))
     assert str(fanout_run.run_dir) not in text and "/tmp" not in text  # no absolute paths
-    assert "import failslice" not in (bundle / "test_reproducer.py").read_text()
+    assert "import failslice" not in (bundle / test_name).read_text()
     proc = _run_pytest(bundle)
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
@@ -287,7 +290,7 @@ def test_bundle_moves_and_detects_tampering(
     shutil.copytree(fanout_run.run_dir / "pytest", moved)
     shutil.rmtree(fanout_run.run_dir)  # originals gone: the bundle stands alone
     assert _run_pytest(moved).returncode == 0
-    with (moved / "fixtures" / "lines.parquet").open("ab") as fh:
+    with (moved / "fixtures" / "tables" / "lines.parquet").open("ab") as fh:
         fh.write(b"x")
     proc = _run_pytest(moved)
     assert proc.returncode == 1 and "sha256 mismatch" in proc.stdout

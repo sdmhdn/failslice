@@ -606,14 +606,22 @@ def test_determinism_independent_of_mapping_and_report_order(tmp_path: Path) -> 
     assert render_config(first) == render_config(reversed_report)
 
 
-def test_render_comments_cannot_inject_active_yaml(tmp_path: Path) -> None:
-    report = _suggest(tmp_path, {"t": 'SELECT i AS "line\nbreak_code" FROM range(2) r(i)'})
-    pk = report.primary_keys[0].model_copy(update={"reason": "evidence\r\nprimary_key: injected"})
+@pytest.mark.parametrize(
+    "line_break", ["\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+def test_render_comments_cannot_inject_active_yaml(tmp_path: Path, line_break: str) -> None:
+    report = _suggest(
+        tmp_path, {"t": f'SELECT i AS "line{line_break}break_code" FROM range(2) r(i)'}
+    )
+    expected = yaml.safe_load(render_config(report))
+    pk = report.primary_keys[0].model_copy(
+        update={"reason": f"evidence{line_break}primary_key: injected"}
+    )
     fk = ForeignKeySuggestion(
-        child="t\nprimary_key: injected",
-        child_column="x",
-        parent="t",
-        parent_column="id",
+        child=f"t{line_break}child: injected",
+        child_column=f"x{line_break}child_column: injected",
+        parent=f"t{line_break}parent: injected",
+        parent_column=f"id{line_break}parent_column: injected",
         confidence="low",
         rows_examined=2,
         complete_scan=False,
@@ -621,20 +629,93 @@ def test_render_comments_cannot_inject_active_yaml(tmp_path: Path) -> None:
         matched=0,
         unmatched=2,
         parent_unique=False,
-        reason="suggestion\nsettings: injected",
+        reason=f"suggestion{line_break}settings: injected",
     )
     modified = report.model_copy(
         update={
             "primary_keys": (pk,),
             "foreign_keys": (fk,),
-            "warnings": ("warning\nsettings: injected",),
+            "warnings": (f"warning{line_break}warning: injected",),
         }
     )
     text = render_config(modified)
     data = yaml.safe_load(text)
-    assert "settings" not in data and "primary_key" not in data["tables"]["t"]
+    assert set(data) == {"version", "tables", "foreign_keys", "predicate"}
+    assert data == expected
     assert data["foreign_keys"] == []
     assert parse_project(data, base_dir=tmp_path).tables["t"].primary_key is None
+
+
+@pytest.mark.parametrize(
+    "line_break", ["\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+def test_render_column_line_breaks_cannot_activate_settings(
+    tmp_path: Path, line_break: str
+) -> None:
+    column = f"parent_id{line_break}settings:{line_break}  max_evals: 1{line_break}#_id"
+    parent_path = _write(
+        tmp_path / f"parents{line_break}data.parquet",
+        f'SELECT i AS "{column}" FROM range(2) r(i)',
+    )
+    child_path = _write(
+        tmp_path / "children.parquet",
+        f'SELECT i AS id, 1 AS "{column}" FROM range(3) r(i)',
+    )
+    report = suggest_relationships(
+        {"parents": parent_path, "children": child_path}, root=tmp_path, base_dir=tmp_path
+    )
+    before = report.model_dump()
+    (fk,) = report.foreign_keys
+    assert (fk.child, fk.child_column, fk.parent, fk.parent_column) == (
+        "children",
+        column,
+        "parents",
+        column,
+    )
+    text = render_config(report)
+    data = yaml.safe_load(text)
+    assert set(data) == {"version", "tables", "foreign_keys", "predicate"}
+    assert data["tables"] == {
+        "children": {"path": "children.parquet", "format": "parquet"},
+        "parents": {"path": parent_path.name, "format": "parquet"},
+    }
+    assert data["foreign_keys"] == []
+    assert report.model_dump() == before
+    project = parse_project(data, base_dir=tmp_path)
+    assert project.settings == Settings()
+    assert project.foreign_keys == ()
+    assert all(table.primary_key is None for table in project.tables.values())
+    assert project.table_path("parents") == parent_path
+    assert project.table_path("children") == child_path
+    assert all(
+        not any(
+            char in line
+            for char in ("\x85", "\u2028", "\u2029", "\v", "\f", "\x1c", "\x1d", "\x1e")
+        )
+        for line in text.split("\n")
+    )
+
+
+@pytest.mark.parametrize(
+    "line_break", ["\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+def test_render_quoted_scalars_preserve_line_breaks(tmp_path: Path, line_break: str) -> None:
+    report = _suggest(tmp_path, {"t": "SELECT 1 AS id"})
+    table = report.tables[0].model_copy(
+        update={
+            "name": f"t{line_break}settings:{line_break}  max_evals: 1",
+            "path": f"data/{line_break}quoted{line_break}file.parquet",
+        }
+    )
+    pk = report.primary_keys[0].model_copy(
+        update={"table": table.name, "column": f"column{line_break}settings:{line_break}_id"}
+    )
+    modified = report.model_copy(update={"tables": (table,), "primary_keys": (pk,)})
+    data = yaml.safe_load(render_config(modified))
+    assert set(data) == {"version", "tables", "foreign_keys", "predicate"}
+    assert data["tables"] == {table.name: {"path": table.path, "format": table.format}}
+    assert data["foreign_keys"] == []
+    assert data["predicate"] == {"sql": "SELECT false"}
 
 
 @pytest.mark.parametrize("sample_rows", [0, -1, True])

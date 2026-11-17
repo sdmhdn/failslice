@@ -49,6 +49,10 @@ def _predicate_text(predicate: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _n(value: object) -> str:
+    return "unknown" if value is None else str(value)
+
+
 def render_report(manifest: Manifest, explanation: Explanation | None) -> str:
     """Render ``report.md`` from the manifest (and the explanation, if computed)."""
     m = manifest
@@ -89,11 +93,17 @@ def render_report(manifest: Manifest, explanation: Explanation | None) -> str:
     if fks:
         out += [f"- `{fk}`" for fk in fks]
         out.append("")
-        out.append(
-            "The reduced data has no new dangling references; rows that already referenced "
-            "a missing parent in the input (input orphans) may survive and are listed in "
-            "`orphans.parquet`."
-        )
+        v_status = (m.verification or {}).get("status")
+        if v_status == "verified":
+            out.append(
+                "The independent replay found no new dangling references; rows that already "
+                "referenced a missing parent in the input (input orphans) may survive and are "
+                "listed in `orphans.parquet`."
+            )
+        elif v_status == "integrity-failed":
+            out.append("The independent replay found new dangling references (see above).")
+        else:
+            out.append("Referential integrity was not verified by an independent replay.")
     else:
         out.append("None declared.")
     out.append("")
@@ -101,7 +111,11 @@ def render_report(manifest: Manifest, explanation: Explanation | None) -> str:
         out += ["## Observations", "", explanation.render_text().rstrip(), ""]
     if m.stats is not None:
         s = m.stats
-        outcomes = ", ".join(f"{k}: {n}" for k, n in sorted(s["outcomes"].items())) or "none"
+        outcomes = (
+            ", ".join(f"{k}: {n}" for k, n in sorted(s["outcomes"].items())) or "none"
+            if s.get("outcomes") is not None
+            else "unknown (the reduction process stopped before reporting them)"
+        )
         out += [
             "## Search",
             "",
@@ -112,8 +126,8 @@ def render_report(manifest: Manifest, explanation: Explanation | None) -> str:
                 else ""
             ),
             f"- outcomes: {outcomes}",
-            f"- cache hits: {s['cache_hits']}, accepted reductions: {s['accepted']}, "
-            f"sweeps: {s['sweeps']}",
+            f"- cache hits: {_n(s['cache_hits'])}, accepted reductions: {_n(s['accepted'])}, "
+            f"sweeps: {_n(s['sweeps'])}",
             f"- stop reason: {s['stop_reason']}",
             f"- elapsed: {m.elapsed_s:.1f} s in total",
             "",
