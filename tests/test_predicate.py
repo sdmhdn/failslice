@@ -134,7 +134,7 @@ def test_expect_needs_rows_for_file() -> None:
     spec = ExpectPredicate(query="SELECT 1", expected_file="x.csv")
     with pytest.raises(ValueError, match="expected_rows"):
         PredicateRunner(spec)
-    assert PredicateRunner(spec, [(1,)]).expected == [(1,)]
+    assert PredicateRunner(spec, [(1,)]).check.expected == ((1,),)
     assert PredicateRunner(SqlPredicate(sql="SELECT true")).query == "SELECT true"
 
 

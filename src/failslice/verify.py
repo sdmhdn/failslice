@@ -15,12 +15,13 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 import duckdb
 import yaml
 
 from failslice.config import ExpectPredicate, ForeignKey, SqlPredicate
+from failslice.portable import count_violations, exemption_problem
 from failslice.predicate import PredicateRunner, Row, normalize_expected
 from failslice.runspec import RunSpec, RunSpecError, restoring_select
 from failslice.safety import validate_predicate_sql
@@ -139,33 +140,13 @@ def _replay(root: Path) -> VerificationReport:
             row = con.execute(f"SELECT count(*) FROM {_q(name)}").fetchone()
             counts[name] = int(row[0]) if row else 0
 
-        fks = [ForeignKey.parse(text) for text in spec.foreign_keys]
-        problem = _check_exemptions(exempt, fks, counts)
+        parsed = [ForeignKey.parse(text) for text in spec.foreign_keys]
+        fks = [(f.child, f.child_column, f.parent, f.parent_column) for f in parsed]
+        pairs = [(e, r) for e, r in exempt]
+        problem = exemption_problem(pairs, fks, counts)
         if problem:
             return VerificationReport("integrity-failed", detail=problem, row_counts=counts)
-        con.execute("CREATE TABLE __fs_exempt(edge INTEGER, row_index BIGINT)")
-        if exempt:
-            con.executemany("INSERT INTO __fs_exempt VALUES (?, ?)", [list(e) for e in exempt])
-
-        violations: dict[str, int] = {}
-        for i, fk in enumerate(fks):
-            # Project only the FK column into a scratch table: its row-id pseudo column
-            # is then the output row index, even if the user's table has a "rowid" column.
-            con.execute(
-                f"CREATE TABLE __fs_ix AS SELECT {_q(fk.child_column)} AS v FROM {_q(fk.child)}"
-            )
-            row = con.execute(
-                f"SELECT count(*) FROM (SELECT rowid AS ri, v FROM __fs_ix) c "
-                f"WHERE c.v IS NOT NULL AND NOT EXISTS "
-                f"(SELECT 1 FROM {_q(fk.parent)} p WHERE p.{_q(fk.parent_column)} = c.v) "
-                f"AND NOT EXISTS (SELECT 1 FROM __fs_exempt x "
-                f"WHERE x.edge = {i} AND x.row_index = c.ri)"
-            ).fetchone()
-            con.execute("DROP TABLE __fs_ix")
-            n = int(row[0]) if row else 0
-            if n:
-                violations[str(fk)] = n
-        con.execute("DROP TABLE __fs_exempt")
+        violations = count_violations(con, fks, pairs)
         con.execute("DROP SCHEMA __fs_raw")
         runner = PredicateRunner(predicate, expected)
         outcome = runner.run(con, float(spec.settings.eval_timeout_s))
@@ -185,28 +166,6 @@ def _replay(root: Path) -> VerificationReport:
         return VerificationReport(status, outcome.kind.value, outcome.signature, detail, counts, {})
     finally:
         con.close()
-
-
-def _check_exemptions(
-    exempt: list[tuple[Any, ...]], fks: list[ForeignKey], counts: dict[str, int]
-) -> str | None:
-    """Orphan exemptions must name an existing edge and a row of that edge's child
-    table (tampered or malformed metadata would otherwise hide violations)."""
-    seen: set[tuple[int, int]] = set()
-    for edge, row_index in exempt:
-        if edge is None or row_index is None:
-            return "malformed orphans metadata: NULL edge or row index"
-        if not all(isinstance(v, int) and not isinstance(v, bool) for v in (edge, row_index)):
-            return f"malformed orphans metadata: non-integer entry ({edge!r}, {row_index!r})"
-        if not 0 <= int(edge) < len(fks):
-            return f"malformed orphans metadata: unknown edge {edge}"
-        child = fks[int(edge)].child
-        if not 0 <= int(row_index) < counts.get(child, 0):
-            return f"malformed orphans metadata: row {row_index} not in {child!r}"
-        if (int(edge), int(row_index)) in seen:
-            return f"malformed orphans metadata: duplicate entry ({edge}, {row_index})"
-        seen.add((int(edge), int(row_index)))
-    return None
 
 
 def verify_in_subprocess(run_dir: str | Path, *, timeout_s: float) -> VerificationReport:

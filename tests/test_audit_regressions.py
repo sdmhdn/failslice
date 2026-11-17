@@ -152,7 +152,7 @@ def test_tolerant_matching_needs_no_exact_pairs() -> None:
 
 
 def test_comparison_failure_is_an_error_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
-    from failslice import predicate as predicate_mod
+    from failslice import portable as predicate_mod
 
     def boom(*_a: Any, **_k: Any) -> bool:
         raise RuntimeError("cannot compare")
