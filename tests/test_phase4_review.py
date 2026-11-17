@@ -251,3 +251,53 @@ def test_latest_without_finalized_runs(project: Project) -> None:
     state = mcp_server._State(project.base_dir, ServerLimits())
     with pytest.raises(mcp_server._Fail, match="no finalized runs"):
         mcp_server._run_dir(state, "latest")
+
+
+# Recheck: the budget covers the serialized result, escaping included.
+def test_reply_budget_counts_escaping() -> None:
+    escaped = Reply[Any](status="ok", data={"x": "\\" * 12_000})
+    result = _reply(escaped, ServerLimits(reply_bytes=64 * 1024))
+    assert result.structured_content is not None
+    assert result.structured_content["error"]["code"] == "reply_too_large"
+    small = _reply(Reply[Any](status="ok", data={"x": 1}), ServerLimits())
+    assert len(small.model_dump_json(by_alias=True).encode()) < 64 * 1024 and not small.is_error
+
+
+# Recheck: malformed manifests never win `latest` or break the listing.
+def test_malformed_manifests(project: Project) -> None:
+    runs = project.base_dir / ".failslice" / "runs"
+    _fake_run(runs, "20260101T000000Z-000001", "2026-01-01T00:00:01+00:00")
+    _fake_run(runs, "20260103T000000Z-000002", None)
+    (runs / "20260103T000000Z-000002" / "manifest.json").write_text(
+        json.dumps({"run_id": "20260103T000000Z-000002", "status": "reduced"})
+    )  # no finished_at
+    _fake_run(runs, "20260104T000000Z-000003", None)
+    (runs / "20260104T000000Z-000003" / "manifest.json").write_text(
+        json.dumps({"run_id": "20260104T000000Z-000003", "status": [], "finished_at": "x"})
+    )
+    state = mcp_server._State(project.base_dir, ServerLimits())
+    assert mcp_server._run_dir(state, "latest").name == "20260101T000000Z-000001"
+    statuses = {r["run_id"]: r["status"] for r in mcp_server._list_runs(state)}
+    assert statuses["20260103T000000Z-000002"] == "unreadable"
+    assert statuses["20260104T000000Z-000003"] == "unreadable"
+
+
+# Recheck: large but valid metadata stays usable; only returned resources are capped.
+def test_large_metadata_is_usable(project: Project, run: failslice.ReductionResult) -> None:
+    state = mcp_server._State(project.base_dir, ServerLimits(resource_bytes=1024))
+    assert mcp_server._run_file(state, run.run_dir, "spec.json").is_file()
+    assert [r["status"] for r in mcp_server._list_runs(state)] == ["reduced"]
+
+
+# Recheck: a cancel after a verified replay is reported from the recorded history.
+def test_cancelled_report_mentions_finished_replay(run: failslice.ReductionResult) -> None:
+    from failslice.api import _finish
+    from failslice.artifacts import RunContext
+
+    cancel = threading.Event()
+    cancel.set()
+    assert run.manifest is not None
+    ctx = RunContext(run.run_dir.name, run.run_dir, "t", time.monotonic(), run.manifest.config, {})
+    _finish(ctx, dataclasses.replace(run, manifest=None), time.monotonic() + 60, cancel)
+    text = (run.run_dir / "report.md").read_text(encoding="utf-8")
+    assert "after the independent replay had finished (verified)" in text

@@ -12,6 +12,7 @@ time; a cancelled request kills the work it started.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import re
 import threading
@@ -58,7 +59,7 @@ from failslice.inference import (
 from failslice.inspect import DatasetInspection, Limits, inspect_tables
 from failslice.pytest_export import ExportError, build_bundle
 from failslice.reducer import DeterminismError, PredicateNotFailingError, ProgressEvent
-from failslice.runspec import SPEC_FILE, RunSpec, RunSpecError
+from failslice.runspec import MAX_SPEC_BYTES, SPEC_FILE, RunSpec, RunSpecError
 from failslice.safety import PredicateValidationError
 from failslice.verify import verify_in_subprocess
 
@@ -289,19 +290,8 @@ def _rel(root: Path, path: Path) -> str:
         return path.name
 
 
-def _reply(model: Reply[Any], limits: ServerLimits) -> CallToolResult:
+def _result(model: Reply[Any]) -> CallToolResult:
     text = model.model_dump_json()
-    # The reply carries the JSON twice (text content and structured content).
-    if 2 * len(text.encode()) + 512 > limits.reply_bytes:
-        model = Reply[Any](
-            status="error",
-            error=ErrorInfo(
-                code="reply_too_large",
-                message=f"the reply exceeds {limits.reply_bytes} bytes; ask for less "
-                "(smaller limits, fewer tables) or read the run's resources",
-            ),
-        )
-        text = model.model_dump_json()
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=json.loads(text),
@@ -309,6 +299,23 @@ def _reply(model: Reply[Any], limits: ServerLimits) -> CallToolResult:
         # invocation and internal errors are marked as tool errors.
         is_error=model.status == "error",
     )
+
+
+def _reply(model: Reply[Any], limits: ServerLimits) -> CallToolResult:
+    result = _result(model)
+    # Budget the whole serialized result (the JSON appears twice, the text copy escaped).
+    if len(result.model_dump_json(by_alias=True).encode()) + 256 > limits.reply_bytes:
+        result = _result(
+            Reply[Any](
+                status="error",
+                error=ErrorInfo(
+                    code="reply_too_large",
+                    message=f"the reply exceeds {limits.reply_bytes} bytes; ask for less "
+                    "(smaller limits, fewer tables) or read the run's resources",
+                ),
+            )
+        )
+    return result
 
 
 async def _guarded(
@@ -512,7 +519,7 @@ def _run_dir(state: _State, run_id: str) -> Path:
     return path
 
 
-def _run_file(state: _State, run_dir: Path, name: str) -> Path:
+def _run_file(state: _State, run_dir: Path, name: str, max_bytes: int = MAX_SPEC_BYTES) -> Path:
     """A fixed artifact of a run: no symlinks, inside the run, a regular file of bounded
     size (a FIFO or device would block a read)."""
     candidate = run_dir / name
@@ -521,12 +528,23 @@ def _run_file(state: _State, run_dir: Path, name: str) -> Path:
     path = resolve_inside(run_dir, name, state.root)
     if path.parent != run_dir or not path.is_file():
         raise _Fail("not_found", f"the run has no {name} (not finished?)")
-    if path.stat().st_size > state.limits.resource_bytes:
-        raise _Fail("too_large", f"the run's {name} exceeds {state.limits.resource_bytes} bytes")
+    if path.stat().st_size > max_bytes:
+        raise _Fail("too_large", f"the run's {name} exceeds {max_bytes} bytes")
     return path
 
 
 FINAL_STATUSES = frozenset({"reduced", "no-candidate", "cancelled"})
+
+
+def _finished_at(manifest: object) -> _dt.datetime | None:
+    """The manifest's finish time as an aware datetime, or None if missing/malformed."""
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("finished_at"), str):
+        return None
+    try:
+        value = _dt.datetime.fromisoformat(manifest["finished_at"])
+    except ValueError:
+        return None
+    return value if value.tzinfo is not None else None
 
 
 def _list_runs(state: _State) -> list[dict[str, Any]]:
@@ -547,8 +565,14 @@ def _list_runs(state: _State) -> list[dict[str, Any]]:
         except (OSError, ValueError):
             other.append({"run_id": d.name, "status": "unreadable"})
             continue
+        finished = _finished_at(m)
         status = m.get("status") if isinstance(m, dict) else None
-        if status not in FINAL_STATUSES or m.get("run_id") != d.name:
+        if (
+            not isinstance(status, str)
+            or status not in FINAL_STATUSES
+            or m.get("run_id") != d.name
+            or finished is None
+        ):
             other.append({"run_id": d.name, "status": "unreadable"})
             continue
         finalized.append(
@@ -558,9 +582,12 @@ def _list_runs(state: _State) -> list[dict[str, Any]]:
                 "minimality": m.get("minimality"),
                 "created_at": m.get("created_at"),
                 "finished_at": m.get("finished_at"),
+                "_finished": finished,
             }
         )
-    finalized.sort(key=lambda r: (str(r.get("finished_at")), r["run_id"]), reverse=True)
+    finalized.sort(key=lambda r: (r["_finished"], r["run_id"]), reverse=True)
+    for r in finalized:
+        del r["_finished"]
     return finalized + other
 
 
