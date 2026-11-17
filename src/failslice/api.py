@@ -16,6 +16,7 @@ from failslice.engine import Engine
 from failslice.predicate import Outcome
 from failslice.reducer import (
     Budget,
+    BudgetExhaustedError,
     DeterminismError,
     PredicateNotFailingError,
     ProgressEvent,
@@ -60,8 +61,9 @@ class CheckReport:
     outcomes: list[Outcome] = field(default_factory=list)
     deterministic: bool = False
     problems: list[str] = field(default_factory=list)
-    stop: Literal["killed", "crashed"] | None = None
-    """Set when an isolated check did not finish: killed at its deadline or crashed."""
+    stop: Literal["budget", "killed", "crashed"] | None = None
+    """Set when the check did not finish: its budget ran out, or (isolated) it was killed
+    at its deadline or crashed."""
 
 
 def check(project: Project, *, isolate: bool = False) -> CheckReport:
@@ -109,6 +111,9 @@ def check_in_process(
         except DeterminismError as exc:
             report.outcomes = exc.outcomes
             report.problems.append(str(exc))
+        except BudgetExhaustedError as exc:
+            report.problems.append(f"check stopped by its budget ({exc.reason.value})")
+            report.stop = "budget"
     finally:
         engine.close()
     return report

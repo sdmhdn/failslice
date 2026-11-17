@@ -19,6 +19,7 @@ import json
 import math
 import re
 import threading
+import time
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -314,6 +315,42 @@ def _canonical_key(value: Any) -> Any:
     return (type(value).__name__, value)
 
 
+class DeadlineConnection:
+    """Wraps a connection so that every statement runs under its own watchdog, armed
+    with the time left until ``deadline`` (absolute ``time.monotonic()``). A statement
+    started after the deadline, or interrupted by it, raises ``TimeoutError``."""
+
+    def __init__(self, con: duckdb.DuckDBPyConnection, deadline: float | None) -> None:
+        self.con = con
+        self.deadline = deadline
+
+    def _run(self, fn: Any, *args: Any) -> duckdb.DuckDBPyConnection:
+        if self.deadline is None:
+            result: duckdb.DuckDBPyConnection = fn(*args)
+            return result
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("deadline reached")
+        with _Watchdog(self.con, left) as dog:
+            try:
+                result = fn(*args)
+            except duckdb.InterruptException as exc:
+                if dog.fired:
+                    raise TimeoutError("deadline reached") from exc
+                raise
+        if dog.fired:
+            raise TimeoutError("deadline reached")
+        return result
+
+    def execute(self, sql: str, params: Any = None) -> duckdb.DuckDBPyConnection:
+        """``con.execute`` under the deadline."""
+        return self._run(self.con.execute, sql, params)
+
+    def executemany(self, sql: str, params: Any) -> duckdb.DuckDBPyConnection:
+        """``con.executemany`` under the deadline."""
+        return self._run(self.con.executemany, sql, params)
+
+
 # ---------------------------------------------------------------------------- classification
 
 
@@ -540,7 +577,7 @@ def exemption_problem(
 
 
 def count_violations(
-    con: duckdb.DuckDBPyConnection,
+    con: duckdb.DuckDBPyConnection | DeadlineConnection,
     fks: Sequence[ForeignKeyRef],
     exempt: Sequence[tuple[int, int]],
 ) -> dict[str, int]:
@@ -603,14 +640,17 @@ def _inside(root: Path, relative: str) -> Path:
     return path
 
 
-def run_bundle(bundle_dir: str | Path, *, timeout_s: float | None = None) -> BundleResult:
+def run_bundle(
+    bundle_dir: str | Path, *, timeout_s: float | None = None, deadline: float | None = None
+) -> BundleResult:
     """Rebuild the reduced tables of a pytest bundle in a fresh in-memory DuckDB database
     (only from the bundle's own files), check fixture hashes, schemas and referential
     integrity, then run ``query.sql`` and classify the outcome.
 
     The fixture files are read as they are; external access is then switched off before
     any expression from ``reproducer.json`` (type restoration) or the query runs.
-    ``timeout_s`` overrides the bundle's evaluation timeout."""
+    ``timeout_s`` overrides the bundle's evaluation timeout; ``deadline`` (absolute
+    ``time.monotonic()``) bounds every statement, the predicate included."""
     root = Path(bundle_dir).resolve()
     result = BundleResult()
     spec = json.loads((root / "reproducer.json").read_text(encoding="utf-8"))
@@ -625,10 +665,11 @@ def run_bundle(bundle_dir: str | Path, *, timeout_s: float | None = None) -> Bun
             result.problems.append(f"fixture {rel} changed (sha256 mismatch)")
     if result.problems:
         return result
-    con = duckdb.connect(
+    raw = duckdb.connect(
         ":memory:",
         config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
     )
+    con = DeadlineConnection(raw, deadline)
     try:
         con.execute(f"SET threads = {int(spec['threads'])}")
         counts: dict[str, int] = {}
@@ -677,7 +718,12 @@ def run_bundle(bundle_dir: str | Path, *, timeout_s: float | None = None) -> Bun
             error_class=p.get("error_class"),
         )
         timeout = float(spec["eval_timeout_s"]) if timeout_s is None else timeout_s
-        result.outcome = run_check(con, check, timeout)
+        if deadline is not None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("deadline reached")
+            timeout = min(timeout, left)
+        result.outcome = run_check(raw, check, timeout)
         return result
     finally:
-        con.close()
+        raw.close()

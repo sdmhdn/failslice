@@ -82,8 +82,11 @@ def _emit(
     run_dir: Path | None = None,
     error: dict[str, Any] | None = None,
     text: Callable[[], None] | None = None,
+    message: str | None = None,
 ) -> NoReturn:
     code = EXIT_CODES[exit_kind]
+    if error is None and exit_kind != "ok":  # every unsuccessful result explains itself
+        error = {"code": status, "message": message or status}
     if as_json:
         doc = {
             "format": JSON_FORMAT,
@@ -275,7 +278,7 @@ def check_cmd(
 
         if report.ok:
             status, kind = "ok", "ok"
-        elif report.stop == "killed":
+        elif report.stop in ("killed", "budget"):
             status, kind = "stopped", "inconclusive"
         elif report.stop == "crashed":
             status, kind = "error", "error"
@@ -286,6 +289,7 @@ def check_cmd(
             as_json=as_json,
             status=status,
             exit_kind=kind,
+            message="; ".join(report.problems),
             data=_check_data(report),
             text=text,
         )
@@ -429,6 +433,8 @@ def reduce_cmd(
             as_json=as_json,
             status=status,
             exit_kind=kind,
+            message="; ".join(result.notes)
+            or (result.verification.detail if result.verification else ""),
             data=_result_data(result),
             run_dir=result.run_dir,
             text=text,
@@ -463,6 +469,7 @@ def verify_cmd(
             as_json=as_json,
             status=report.status,
             exit_kind=kind,
+            message=report.detail,
             data=asdict(report),
             run_dir=run_dir.resolve(),
             text=text,

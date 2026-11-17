@@ -101,7 +101,8 @@ def render_report(manifest: Manifest, explanation: Explanation | None) -> str:
                 "listed in `orphans.parquet`."
             )
         elif v_status == "integrity-failed":
-            out.append("The independent replay found new dangling references (see above).")
+            detail = (m.verification or {}).get("detail") or "see the verification report"
+            out.append(f"The independent replay's integrity check failed: {detail}.")
         else:
             out.append("Referential integrity was not verified by an independent replay.")
     else:

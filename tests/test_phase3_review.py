@@ -247,7 +247,7 @@ def test_report_integrity_wording(run: failslice.ReductionResult, tmp_path: Path
 
     assert "found no new dangling references" in (run.run_dir / "report.md").read_text()
     for status, phrase in (
-        ("integrity-failed", "found new dangling references"),
+        ("integrity-failed", "integrity check failed"),
         ("unverified", "was not verified"),
     ):
         out = tmp_path / status
@@ -292,3 +292,89 @@ def test_duplicate_parent_keys_are_referenced_only(
         e.close()
     (fk,) = explain(out).foreign_keys
     assert fk.duplicate_parent_keys == 1
+
+
+# Recheck: every statement gets its own deadline-armed watchdog.
+def test_deadline_connection_rearms_per_statement() -> None:
+    raw = duckdb.connect()
+    con = portable.DeadlineConnection(raw, time.monotonic() + 0.05)
+    assert con.execute("SELECT 1").fetchone() == (1,)
+    time.sleep(0.1)
+    with pytest.raises(TimeoutError):
+        con.execute("SELECT 1")
+    slow = portable.DeadlineConnection(raw, time.monotonic() + 0.2)
+    with pytest.raises(TimeoutError):
+        slow.execute("SELECT count(*) FROM range(10000000000)")
+    assert portable.DeadlineConnection(raw, None).executemany("SELECT ?", [[1]]) is not None
+
+
+def test_run_bundle_honours_deadline(run: failslice.ReductionResult) -> None:
+    with pytest.raises(TimeoutError):
+        portable.run_bundle(run.run_dir / "pytest", deadline=time.monotonic() - 1)
+
+
+# Recheck 7: a check stopped by its budget is inconclusive (exit 3), not a crash.
+def test_check_budget_stop(project_factory: Callable[..., Project]) -> None:
+    p = project_factory(
+        fanout_tables(),
+        fks=FANOUT_FKS,
+        predicate=FANOUT_PREDICATE,
+        settings={"wall_clock_s": 1e-6},
+    )
+    report = failslice.check(p)
+    assert not report.ok and report.stop == "budget" and "budget" in report.problems[0]
+    with pytest.raises(SystemExit) as exc:
+        cli_main(["check", "-c", str(p.base_dir / "failslice.yaml"), "--no-isolate", "--json"])
+    assert exc.value.code == 3
+
+
+# Recheck 11: the default test name also depends on the predicate.
+def test_default_names_differ_by_predicate(
+    project_factory: Callable[..., Project], tmp_path: Path
+) -> None:
+    names = set()
+    for i, sql in enumerate(("SELECT count(*) > 0 FROM t", "SELECT count(*) >= 1 FROM t")):
+        p = project_factory({"t": ([("x", "BIGINT")], [(1,)])}, predicate={"sql": sql})
+        res = failslice.reduce(p, out_dir=tmp_path / f"r{i}")
+        names |= {f.name for f in (res.run_dir / "pytest").glob("test_*.py")}
+    assert len(names) == 2
+
+
+# Recheck 13: integrity-failed is described with the replay's own detail.
+def test_report_integrity_failed_detail(run: failslice.ReductionResult, tmp_path: Path) -> None:
+    import dataclasses
+
+    from failslice.artifacts import RunContext, finalize
+    from failslice.verify import VerificationReport
+
+    out = tmp_path / "x"
+    shutil.copytree(run.run_dir, out, ignore=shutil.ignore_patterns("pytest"))
+    v = VerificationReport("integrity-failed", detail="malformed orphans metadata: duplicate")
+    res = dataclasses.replace(run, run_dir=out, verification=v)
+    assert run.manifest is not None
+    finalize(RunContext("rid", out, "t", time.monotonic(), run.manifest.config, {}), res)
+    assert "integrity check failed: malformed orphans metadata" in (out / "report.md").read_text()
+
+
+# Recheck: unsuccessful JSON results always carry an error object.
+def test_json_error_is_never_null_on_failure(
+    project: Project, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import dataclasses
+
+    from failslice import cli
+    from failslice.api import ReductionResult
+
+    crashed = ReductionResult(
+        project.base_dir,
+        "no-candidate",
+        None,
+        None,
+        ["crash: IOException: bad parquet"],
+        failure="crashed",
+    )
+    monkeypatch.setattr(cli, "reduce", lambda *_a, **_k: dataclasses.replace(crashed))
+    with pytest.raises(SystemExit) as exc:
+        cli_main(["reduce", "-c", str(project.base_dir / "failslice.yaml"), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert exc.value.code == 4 and doc["error"]["message"] == "crash: IOException: bad parquet"

@@ -205,9 +205,14 @@ def build_bundle(
         for text in spec.foreign_keys:
             child, parent = (part.strip() for part in text.split("->"))
             fks.append([*child.split(".", 1), *parent.split(".", 1)])
-        if name is None:
-            digest = json.dumps([sorted(fixtures.items()), expect]).encode()
-            name = "reproducer_" + hashlib.sha256(digest).hexdigest()[:8]
+        pred = spec.predicate
+        query = pred.sql if isinstance(pred, SqlPredicate) else pred.query
+        predicate_entry = _predicate_entry(spec, root)
+        if name is None:  # distinct per data, predicate and polarity
+            digest = json.dumps(
+                [sorted(fixtures.items()), query, predicate_entry, expect], sort_keys=True
+            ).encode()
+            name = "reproducer_" + hashlib.sha256(digest).hexdigest()[:12]
         reproducer = {
             "format": portable.BUNDLE_FORMAT,
             "portable_version": portable.PORTABLE_VERSION,
@@ -219,7 +224,7 @@ def build_bundle(
             "tables": tables,
             "foreign_keys": fks,
             "orphans": "fixtures/orphans.parquet",
-            "predicate": _predicate_entry(spec, root),
+            "predicate": predicate_entry,
             "fixtures": fixtures,
         }
         query = (
@@ -241,11 +246,10 @@ def build_bundle(
             encoding="utf-8",
         )
         _check_deadline(deadline)
-        left = None if deadline is None else deadline - time.monotonic()
-        result = portable.run_bundle(
-            stage,
-            timeout_s=None if left is None else max(min(left, spec.settings.eval_timeout_s), 0.001),
-        )
+        try:
+            result = portable.run_bundle(stage, deadline=deadline)
+        except TimeoutError as exc:
+            raise ExportError("deadline exceeded while self-checking the pytest bundle") from exc
         if result.problems or result.violations or result.outcome is None:
             raise ExportError(f"bundle self-check failed: {result.problems or result.violations}")
         if not result.outcome.is_true:

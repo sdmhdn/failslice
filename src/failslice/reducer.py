@@ -19,6 +19,7 @@ from failslice.predicate import Outcome, OutcomeKind
 
 __all__ = [
     "Budget",
+    "BudgetExhaustedError",
     "DeterminismError",
     "Minimality",
     "PredicateNotFailingError",
@@ -59,7 +60,9 @@ class Budget:
     wall_clock_s: float = 900.0
 
 
-class _BudgetExhaustedError(Exception):
+class BudgetExhaustedError(Exception):
+    """A budget (evaluations or wall clock) ran out; ``reason`` says which."""
+
     def __init__(self, reason: StopReason) -> None:
         super().__init__(reason.value)
         self.reason = reason
@@ -191,9 +194,9 @@ class Reducer:
 
     def _check_budget(self) -> None:
         if self.stats.evaluations >= self.budget.max_evals:
-            raise _BudgetExhaustedError(StopReason.MAX_EVALS)
+            raise BudgetExhaustedError(StopReason.MAX_EVALS)
         if self._elapsed() >= self.budget.wall_clock_s:
-            raise _BudgetExhaustedError(StopReason.WALL_CLOCK)
+            raise BudgetExhaustedError(StopReason.WALL_CLOCK)
 
     def _record(self, outcome: Outcome) -> None:
         self.stats.evaluations += 1
@@ -290,7 +293,7 @@ class Reducer:
             self._sweeps()
             if certify:
                 self._certify()
-        except _BudgetExhaustedError as stop:
+        except BudgetExhaustedError as stop:
             self.stats.stop_reason = stop.reason
             if self.stats.minimality is not Minimality.VERIFIED and certify:
                 self.stats.minimality = Minimality.NOT_VERIFIED

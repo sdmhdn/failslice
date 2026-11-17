@@ -10,14 +10,13 @@ manifest. ``manifest.json`` is written atomically and last.
 
 from __future__ import annotations
 
-import contextlib
 import datetime as _dt
 import hashlib
 import json
 import os
 import platform
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -28,7 +27,7 @@ from pydantic import BaseModel, ConfigDict
 from failslice import __version__
 from failslice.config import Project
 from failslice.explain import Explanation, explain
-from failslice.portable import _Watchdog
+from failslice.portable import DeadlineConnection
 from failslice.pytest_export import build_bundle
 from failslice.reducer import Minimality
 from failslice.report import render_report
@@ -213,42 +212,24 @@ class _Steps:
 
 
 def write_csv(run_dir: Path, spec: RunSpec, deadline: float | None) -> None:
-    """Write ``csv/<t>.csv`` (UTF-8, header, ``\\N`` for NULL, non-NULL strings quoted)
-    under one watchdog that fires at ``deadline``."""
+    """Write ``csv/<t>.csv`` (UTF-8, header, ``\\N`` for NULL, non-NULL strings quoted);
+    every statement is bounded by ``deadline``."""
     out = run_dir / CSV_DIR
     out.mkdir(exist_ok=True)
-    con = duckdb.connect(":memory:")
+    raw = duckdb.connect(":memory:")
+    con = DeadlineConnection(raw, deadline)
     try:
-        with _deadline_watchdog(con, deadline) as dog:
-            _write_csv(con, run_dir, spec, out)
-        if dog is not None and dog.fired:
-            raise TimeoutError("CSV export exceeded the deadline")
+        for name, entry in spec.tables.items():
+            src = spec.resolve(run_dir, entry.file)
+            dest = out / f"{name}.csv"
+            text_cols = [c for c, t in entry.columns if t == "VARCHAR"]
+            quote = f", FORCE_QUOTE ({', '.join(_q(c) for c in text_cols)})" if text_cols else ""
+            con.execute(
+                f"COPY (SELECT * FROM read_parquet({_lit(str(src))})) TO {_lit(str(dest))} "
+                f"(FORMAT csv, HEADER true, NULLSTR '\\N'{quote})"
+            )
     finally:
-        con.close()
-
-
-@contextlib.contextmanager
-def _deadline_watchdog(
-    con: duckdb.DuckDBPyConnection, deadline: float | None
-) -> Iterator[_Watchdog | None]:
-    """Interrupt ``con`` at ``deadline`` (absolute ``time.monotonic()`` value)."""
-    if deadline is None:
-        yield None
-        return
-    with _Watchdog(con, max(deadline - time.monotonic(), 0.001)) as dog:
-        yield dog
-
-
-def _write_csv(con: duckdb.DuckDBPyConnection, run_dir: Path, spec: RunSpec, out: Path) -> None:
-    for name, entry in spec.tables.items():
-        src = spec.resolve(run_dir, entry.file)
-        dest = out / f"{name}.csv"
-        text_cols = [c for c, t in entry.columns if t == "VARCHAR"]
-        quote = f", FORCE_QUOTE ({', '.join(_q(c) for c in text_cols)})" if text_cols else ""
-        con.execute(
-            f"COPY (SELECT * FROM read_parquet({_lit(str(src))})) TO {_lit(str(dest))} "
-            f"(FORMAT csv, HEADER true, NULLSTR '\\N'{quote})"
-        )
+        raw.close()
 
 
 def _q(name: str) -> str:

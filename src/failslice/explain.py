@@ -10,8 +10,6 @@ column the predicate depends on, and never claims a root cause.
 
 from __future__ import annotations
 
-import contextlib
-import time
 from pathlib import Path
 from typing import Literal
 
@@ -19,7 +17,7 @@ import duckdb
 from pydantic import BaseModel, ConfigDict
 
 from failslice.config import ForeignKey
-from failslice.portable import _Watchdog
+from failslice.portable import DeadlineConnection
 from failslice.runspec import RunSpec, restoring_select
 
 __all__ = ["Explanation", "ForeignKeyObservation", "KeyObservation", "TableObservation", "explain"]
@@ -124,56 +122,48 @@ def _lit(text: str) -> str:
 
 
 def explain(run_dir: str | Path, *, limit: int = 20, deadline: float | None = None) -> Explanation:
-    """Compute observations on the reduced tables of ``run_dir``; the queries are
-    interrupted at ``deadline`` (absolute ``time.monotonic()``), raising ``TimeoutError``."""
+    """Compute observations on the reduced tables of ``run_dir``; every query is bounded
+    by ``deadline`` (absolute ``time.monotonic()``) and raises ``TimeoutError`` past it."""
     root = Path(run_dir).resolve()
     spec = RunSpec.read(root)
-    con = duckdb.connect(
+    raw = duckdb.connect(
         ":memory:",
         config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
     )
+    con = DeadlineConnection(raw, deadline)
     try:
-        timer = (
-            _Watchdog(con, max(deadline - time.monotonic(), 0.001))
-            if deadline is not None
-            else contextlib.nullcontext(None)
-        )
-        with timer as dog:
-            for name, entry in spec.tables.items():
-                source = f"read_parquet({_lit(str(spec.resolve(root, entry.file)))})"
-                con.execute(
-                    f"CREATE TABLE {_q(name)} AS "
-                    + restoring_select(source, entry.columns, entry.source_columns)
-                )
-            orphans = spec.resolve(root, spec.orphans_file)
+        for name, entry in spec.tables.items():
+            source = f"read_parquet({_lit(str(spec.resolve(root, entry.file)))})"
             con.execute(
-                f"CREATE TABLE __fs_orphans AS SELECT edge FROM read_parquet({_lit(str(orphans))})"
+                f"CREATE TABLE {_q(name)} AS "
+                + restoring_select(source, entry.columns, entry.source_columns)
             )
-            con.execute("SET enable_external_access = false")
-            tables = [
-                _table(con, name, entry.primary_key, entry.source_columns)
-                for name, entry in spec.tables.items()
-            ]
-            fks = [
-                _foreign_key(con, i, ForeignKey.parse(text), limit)
-                for i, text in enumerate(spec.foreign_keys)
-            ]
-            result = Explanation(tables=tuple(tables), foreign_keys=tuple(fks))
-        if dog is not None and dog.fired:
-            raise TimeoutError("explain exceeded the deadline")
-        return result
+        orphans = spec.resolve(root, spec.orphans_file)
+        con.execute(
+            f"CREATE TABLE __fs_orphans AS SELECT edge FROM read_parquet({_lit(str(orphans))})"
+        )
+        con.execute("SET enable_external_access = false")
+        tables = [
+            _table(con, name, entry.primary_key, entry.source_columns)
+            for name, entry in spec.tables.items()
+        ]
+        fks = [
+            _foreign_key(con, i, ForeignKey.parse(text), limit)
+            for i, text in enumerate(spec.foreign_keys)
+        ]
+        return Explanation(tables=tuple(tables), foreign_keys=tuple(fks))
     finally:
-        con.close()
+        raw.close()
 
 
-def _one(con: duckdb.DuckDBPyConnection, sql: str) -> tuple[int, ...]:
+def _one(con: DeadlineConnection, sql: str) -> tuple[int, ...]:
     row = con.execute(sql).fetchone()
     assert row is not None
     return tuple(int(v or 0) for v in row)
 
 
 def _table(
-    con: duckdb.DuckDBPyConnection,
+    con: DeadlineConnection,
     name: str,
     primary_key: str | None,
     columns: tuple[tuple[str, str], ...],
@@ -208,7 +198,7 @@ def _table(
 
 
 def _foreign_key(
-    con: duckdb.DuckDBPyConnection, edge: int, fk: ForeignKey, limit: int
+    con: DeadlineConnection, edge: int, fk: ForeignKey, limit: int
 ) -> ForeignKeyObservation:
     c, p = _q(fk.child), _q(fk.parent)
     cc, pc = _q(fk.child_column), _q(fk.parent_column)
