@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as _dt
-import json
 import secrets
 import time
 from collections.abc import Callable
@@ -11,13 +10,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from failslice.artifacts import Manifest, RunContext, finalize, minimality_label
 from failslice.config import ConfigError, Project
 from failslice.engine import Engine
 from failslice.predicate import Outcome
 from failslice.reducer import (
     Budget,
     DeterminismError,
-    Minimality,
     PredicateNotFailingError,
     ProgressEvent,
     Reducer,
@@ -25,7 +24,12 @@ from failslice.reducer import (
 )
 from failslice.runspec import RunSpec
 from failslice.safety import validate_predicate_sql
-from failslice.supervisor import SupervisedOutcome, run_supervised, write_checkpoint
+from failslice.supervisor import (
+    SupervisedOutcome,
+    run_check_supervised,
+    run_supervised,
+    write_checkpoint,
+)
 from failslice.verify import VerificationReport, verify_in_subprocess
 
 __all__ = ["CheckReport", "ReductionResult", "check", "reduce", "validate_predicate", "verify"]
@@ -58,12 +62,23 @@ class CheckReport:
     problems: list[str] = field(default_factory=list)
 
 
-def check(project: Project) -> CheckReport:
+def check(project: Project, *, isolate: bool = False) -> CheckReport:
     """Validate the predicate, load the data, report FK orphans and run the
     determinism check (the predicate must be TRUE on the full data, four times,
-    with identical signatures)."""
-    report = CheckReport(ok=False)
+    with identical signatures).
+
+    With ``isolate=True`` the check runs in a supervised child process (hard deadline
+    ``wall_clock_s``; one evaluation may not exceed ``eval_timeout_s`` plus a grace).
+    """
     validate_predicate(project)
+    if isolate:
+        return run_check_supervised(project)
+    return check_in_process(project)
+
+
+def check_in_process(project: Project) -> CheckReport:
+    """The body of :func:`check` (validation already done)."""
+    report = CheckReport(ok=False)
     engine = Engine(project)
     try:
         for name, info in engine.tables.items():
@@ -104,15 +119,15 @@ class ReductionResult:
     notes: list[str] = field(default_factory=list)
     spec: RunSpec | None = None
     """The exported reproducer's contract (``spec.json``), if one was exported."""
+    manifest: Manifest | None = None
+    """The run summary (``manifest.json``), written last."""
 
     @property
     def minimality_label(self) -> str:
-        """Human label: ``1-minimal (verified)`` only if certification completed."""
-        if self.status != "reduced":
-            return "no reproducer"
-        if self.stats is not None and self.stats.minimality is Minimality.VERIFIED:
-            return "1-minimal (verified)"
-        return "reduced, minimality not verified"
+        """``1-minimal (verified)`` only if certification completed, the replay is
+        verified and the export was lossless; ``no reproducer`` without a candidate;
+        ``reduced, minimality not verified`` otherwise."""
+        return minimality_label(self, self.spec)
 
 
 def _new_run_dir(project: Project, out_dir: str | Path | None) -> tuple[Path, str]:
@@ -146,6 +161,7 @@ def reduce(
     settings = project.settings
     deadline = time.monotonic() + settings.wall_clock_s  # covers reduction, export, replay
     run_dir, run_id = _new_run_dir(project, out_dir)
+    context = RunContext.start(project, run_dir, run_id)
     reserve = replay_reserve(settings.wall_clock_s)
     budget = Budget(max_evals=settings.max_evals, wall_clock_s=settings.wall_clock_s - reserve)
     notes: list[str] = []
@@ -165,7 +181,7 @@ def reduce(
     if stats is None or not stats.confirmed:
         notes.append("stopped before any configuration was confirmed TRUE")
         result = ReductionResult(run_dir, "no-candidate", stats, None, notes)
-        _write_result(result)
+        result.manifest = finalize(context, result, deadline=deadline)
         return result
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -177,7 +193,7 @@ def reduce(
     spec = RunSpec.read(run_dir)
     notes.extend(spec.warnings)
     result = ReductionResult(run_dir, "reduced", stats, verification, notes, spec)
-    _write_result(result)
+    result.manifest = finalize(context, result, deadline=deadline)
     return result
 
 
@@ -219,34 +235,6 @@ def _reduce_in_process(
         return stats
     finally:
         engine.close()
-
-
-def _write_result(result: ReductionResult) -> None:
-    stats = result.stats
-    data: dict[str, Any] = {
-        "status": result.status,
-        "minimality": result.minimality_label,
-        "notes": result.notes,
-        "verification": json.loads(result.verification.to_json()) if result.verification else None,
-    }
-    if stats is not None:
-        data.update(
-            {
-                "sizes_before": stats.sizes_before,
-                "sizes_after": stats.sizes_after,
-                "evaluations": stats.evaluations,
-                "evaluations_started": stats.evaluations_started,
-                "outcomes": dict(stats.outcomes),
-                "error_classes": dict(stats.error_classes),
-                "cache_hits": stats.cache_hits,
-                "accepted": stats.accepted,
-                "sweeps": stats.sweeps,
-                "stop_reason": stats.stop_reason.value,
-                "minimality_detail": stats.minimality_detail,
-                "elapsed_s": round(stats.elapsed_s, 3),
-            }
-        )
-    (result.run_dir / "result.json").write_text(json.dumps(data, indent=2) + "\n")
 
 
 def verify(run_dir: str | Path, *, timeout_s: float = 300.0) -> VerificationReport:

@@ -305,7 +305,7 @@ rows; a lossy round trip is recorded in `spec.json` `warnings` and reported. The
 Run directory `.failslice/runs/<run-id>/`:
 
 - `spec.json` (implemented): the typed, versioned contract of the run directory
-  (`RunSpec`, format 2, ADR 0008): tables with exported and source schemas, FKs,
+  (`RunSpec`, format 3, ADR 0008 and 0009): tables with exported and source schemas, FKs,
   predicate, expectation, input provenance (path, sha256, rows), replay settings,
   warnings. Replay and every later artifact read only this.
 - `result.json` (implemented): status, minimality, statistics, verification.

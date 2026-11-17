@@ -122,7 +122,7 @@ def test_unconfirmed_run_is_no_candidate(
         assert res.status == "no-candidate"
         assert res.verification is None
         assert not (out / "tables").exists()
-        assert json.loads((out / "result.json").read_text())["status"] == "no-candidate"
+        assert json.loads((out / "manifest.json").read_text())["status"] == "no-candidate"
 
 
 # Finding 8: replay refuses expectation paths outside the run directory.

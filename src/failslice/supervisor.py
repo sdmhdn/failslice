@@ -28,9 +28,9 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from failslice.config import Project
+from failslice.config import ConfigError, Project
 from failslice.engine import Engine
 from failslice.reducer import (
     Budget,
@@ -43,10 +43,14 @@ from failslice.reducer import (
     StopReason,
 )
 
+if TYPE_CHECKING:
+    from failslice.api import CheckReport
+
 __all__ = [
     "CHECKPOINT",
     "SupervisedOutcome",
     "read_checkpoint",
+    "run_check_supervised",
     "run_supervised",
     "stats_from_dict",
     "write_checkpoint",
@@ -459,3 +463,40 @@ def _recover(
     result.stats = stats
     result.recovered = True
     result.exported = True
+
+
+def _check_child(project: Project, conn: Connection) -> None:
+    try:
+        from failslice.api import check_in_process  # noqa: PLC0415 - api imports this module
+
+        conn.send(("check", check_in_process(project)))
+    except ConfigError as exc:
+        with contextlib.suppress(Exception):
+            conn.send(("config_error", str(exc)))
+    except BaseException as exc:
+        with contextlib.suppress(Exception):
+            conn.send(("crash", f"{type(exc).__name__}: {exc}"))
+    finally:
+        conn.close()
+
+
+def run_check_supervised(project: Project, *, grace_s: float = DEFAULT_GRACE_S) -> CheckReport:
+    """Run :func:`failslice.api.check_in_process` in a child process with a hard deadline
+    of ``wall_clock_s + grace_s``. A killed or crashed check is reported as not ok."""
+    from failslice.api import CheckReport  # noqa: PLC0415 - api imports this module
+
+    got: dict[str, Any] = {}
+
+    def on_event(kind: str, payload: Any) -> bool:
+        got[kind] = payload
+        return kind in {"check", "config_error", "crash"}
+
+    deadline = time.monotonic() + project.settings.wall_clock_s + grace_s
+    kill = _pump(_check_child, (project,), deadline, on_event, None, grace_s)
+    if "config_error" in got:
+        raise ConfigError(got["config_error"])
+    if "check" in got:
+        report: CheckReport = got["check"]
+        return report
+    problem = got.get("crash") or (f"check stopped: {kill}" if kill else "check process failed")
+    return CheckReport(ok=False, problems=[str(problem)])

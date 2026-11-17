@@ -50,7 +50,7 @@ def test_reduce_in_process_end_to_end(
         "orders": 2,
         "lines": 1,
     }
-    data = json.loads((res.run_dir / "result.json").read_text())
+    data = json.loads((res.run_dir / "manifest.json").read_text())
     assert data["minimality"] == "1-minimal (verified)"
     assert data["verification"]["status"] == "verified"
     assert read_checkpoint(res.run_dir, "wrong-id") is None

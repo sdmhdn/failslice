@@ -630,9 +630,8 @@ def run_bundle(bundle_dir: str | Path) -> BundleResult:
         counts: dict[str, int] = {}
         for table in spec["tables"]:
             source = f"read_parquet({_lit(str(_inside(root, table['file'])))})"
-            con.execute(
-                f"CREATE TABLE {_q(table['name'])} AS " + table["select"].format(source=source)
-            )
+            exprs = ", ".join(table["select"])
+            con.execute(f"CREATE TABLE {_q(table['name'])} AS SELECT {exprs} FROM {source}")
         exempt_rows = con.execute(
             f"SELECT edge, row_index FROM read_parquet({_lit(str(_inside(root, spec['orphans'])))})"
         ).fetchall()

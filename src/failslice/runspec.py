@@ -1,4 +1,4 @@
-"""The run-directory contract: ``spec.json`` (format 2).
+"""The run-directory contract: ``spec.json`` (format 3).
 
 :class:`RunSpec` is written by :meth:`failslice.engine.Engine.export` and is the only
 description of a reproducer that replay (``failslice.verify``) and later consumers
@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -31,11 +31,12 @@ __all__ = [
     "RunSpec",
     "RunSpecError",
     "TableEntry",
+    "restoring_exprs",
     "restoring_select",
 ]
 
 SPEC_FILE = "spec.json"
-FORMAT = 2
+FORMAT = 3
 
 Column = tuple[str, str]
 
@@ -67,6 +68,8 @@ class TableEntry(_Model):
     """Schema of the exported Parquet file."""
     source_columns: tuple[Column, ...]
     """Schema as loaded from the input (what the predicate saw)."""
+    primary_key: str | None = None
+    """Declared primary key (informational, never enforced)."""
 
 
 class ReplaySettings(_Model):
@@ -79,7 +82,7 @@ class ReplaySettings(_Model):
 class RunSpec(_Model):
     """Everything needed to replay and describe a reduced reproducer."""
 
-    format: Literal[2] = 2
+    format: Literal[3] = 3
     failslice_version: str
     duckdb_version: str
     tables: dict[str, TableEntry]
@@ -99,6 +102,10 @@ class RunSpec(_Model):
     rowmap_file: str = "rowmap.parquet"
     warnings: tuple[str, ...] = ()
     """Export problems replay cannot repair (e.g. a lossy type round trip)."""
+    run_settings: dict[str, Any] = Field(default_factory=dict)
+    """The effective run settings (seed, budgets, ...)."""
+    input_orphans: dict[str, int] = Field(default_factory=dict)
+    """Input orphans per FK edge in the full input (``child.col -> parent.col`` -> rows)."""
 
     def write(self, run_dir: Path) -> None:
         """Write ``spec.json`` into ``run_dir``."""
@@ -150,12 +157,16 @@ def _type_sql(text: str) -> str:
 def restoring_select(source: str, exported: Sequence[Column], wanted: Sequence[Column]) -> str:
     """``SELECT`` over ``source`` that casts columns whose exported type differs from
     the wanted (source) type back to it, keeping column order."""
+    return f"SELECT {', '.join(restoring_exprs(exported, wanted)) or '*'} FROM {source}"
+
+
+def restoring_exprs(exported: Sequence[Column], wanted: Sequence[Column]) -> list[str]:
+    """Select expressions of :func:`restoring_select` (casts canonicalized by sqlglot)."""
     if [c for c, _ in exported] != [c for c, _ in wanted]:
         raise RunSpecError(
             f"column names differ: {[c for c, _ in exported]} != {[c for c, _ in wanted]}"
         )
-    parts = [
+    return [
         _q(name) if have == want else f"CAST({_q(name)} AS {_type_sql(want)}) AS {_q(name)}"
         for (name, have), (_, want) in zip(exported, wanted, strict=True)
     ]
-    return f"SELECT {', '.join(parts) or '*'} FROM {source}"

@@ -277,8 +277,8 @@ def test_unconfirmed_run_keeps_stats(
     assert res.stats is not None and res.stats.evaluations == 2
     if isolate:
         assert res.stats.evaluations_started == 2
-    data = json.loads((tmp_path / "run" / "result.json").read_text())
-    assert data["status"] == "no-candidate" and data["evaluations"] == 2
+    data = json.loads((tmp_path / "run" / "manifest.json").read_text())
+    assert data["status"] == "no-candidate" and data["stats"]["evaluations"] == 2
 
 
 def test_checkpoint_carries_matching_stats(
@@ -374,9 +374,11 @@ def test_runspec_is_versioned_and_strict(
 ) -> None:
     out = _fanout_run(project_factory, tmp_path)
     spec = RunSpec.read(out)
-    assert spec.format == 2 and spec.inputs["table:lines"].rows == 400
+    assert spec.format == 3 and spec.inputs["table:lines"].rows == 400
+    assert spec.input_orphans == {str(fk): 0 for fk in FANOUT_FKS}
+    assert spec.run_settings["seed"] == 0
     data = json.loads((out / "spec.json").read_text())
-    data["format"] = 1
+    data["format"] = 2
     (out / "spec.json").write_text(json.dumps(data))
     report = verify_run_dir(out)
     assert report.status == "replay-failed" and "unsupported spec format" in report.detail

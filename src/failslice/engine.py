@@ -593,6 +593,7 @@ class Engine:
                 rows=self._sizes[name],
                 columns=exported,
                 source_columns=info.columns,
+                primary_key=self.project.tables[name].primary_key,
             )
         rowmap_parts = [
             f"SELECT {_lit(name)} AS table_name, "
@@ -658,6 +659,8 @@ class Engine:
                 eval_timeout_s=self.project.settings.eval_timeout_s,
             ),
             warnings=tuple(warnings),
+            run_settings=self.project.settings.model_dump(mode="json"),
+            input_orphans=dict(self.orphan_counts),
         )
         spec.write(out_dir)
         return spec
