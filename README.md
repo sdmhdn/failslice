@@ -242,7 +242,8 @@ Current limits:
 - **Phase 6:** polish and first release.
 
 Design details: [`docs/design.md`](docs/design.md); decisions:
-[`docs/decisions/`](docs/decisions/).
+[`docs/decisions/`](docs/decisions/); a full user guide in Persian:
+[`docs/guide-fa.md`](docs/guide-fa.md).
 
 ## Development
 
@@ -272,6 +273,8 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 <div dir="rtl" lang="fa">
 
 ## فارسی
+
+راهنمای کامل و گام‌به‌گام فارسی در فایل [`docs/guide-fa.md`](docs/guide-fa.md) است و با هر مرحلهٔ پروژه به‌روز می‌شود.
 
 **فیل‌اسلایس (FailSlice) یک مجموعه‌دادهٔ چندجدولی را تا چند ردیفی کوچک می‌کند که هنوز باگ داده را نشان می‌دهند، کلیدهای خارجی را سالم نگه می‌دارد و نتیجه را با اجرای مستقل دوباره تأیید می‌کند.**
 

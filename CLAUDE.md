@@ -16,6 +16,8 @@ MCP server `failslice-mcp`. The full brief is
 - Check the current stable version before adding any dependency; prefer few, maintained deps.
 - When unsure, pick the simplest design that keeps guarantees honest and record it as a
   short ADR in `docs/decisions/NNNN-title.md`.
+- At the end of every phase, update the Persian user guide `docs/guide-fa.md` (new features,
+  status list, change history). Every Persian line must start with a Persian word.
 
 ## Codex collaboration
 
