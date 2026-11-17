@@ -58,6 +58,9 @@ __all__ = [
 
 CHECKPOINT = "checkpoint.json"
 DEFAULT_GRACE_S = 5.0
+RECOVERY_MIN_S = 15.0
+"""Time a recovery child always gets (interpreter start, imports, reload, export), even
+right at the deadline; part of the documented fixed graces."""
 PROGRESS_DRAIN_S = 0.5
 """How long a finished run waits for a slow progress callback before abandoning it."""
 
@@ -75,7 +78,7 @@ def write_checkpoint(
         "stats": _stats_to_dict(stats) if stats is not None else None,
     }
     tmp = run_dir / (CHECKPOINT + ".tmp")
-    tmp.write_text(json.dumps(data))
+    tmp.write_text(json.dumps(data), encoding="utf-8")
     os.replace(tmp, run_dir / CHECKPOINT)
 
 
@@ -84,7 +87,7 @@ def read_checkpoint(run_dir: Path, run_id: str) -> dict[str, Any] | None:
     path = run_dir / CHECKPOINT
     if not path.is_file():
         return None
-    data: dict[str, Any] = json.loads(path.read_text())
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     return data if data.get("run_id") == run_id else None
 
 
@@ -440,7 +443,7 @@ def _recover(
     kill = _pump(
         _recover_child,
         (project, str(run_dir), run_id),
-        max(deadline, time.monotonic() + grace_s),
+        max(deadline, time.monotonic() + max(grace_s, RECOVERY_MIN_S)),
         on_event,
         None,
         grace_s,

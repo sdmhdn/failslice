@@ -21,7 +21,7 @@ from failslice.predicate import OutcomeKind, PredicateRunner, results_equal
 from failslice.reducer import Budget, Minimality, PredicateNotFailingError
 from failslice.supervisor import _pump, run_supervised
 from failslice.verify import verify_run_dir
-from tests.conftest import FANOUT_FKS, FANOUT_PREDICATE, fanout_tables
+from tests.conftest import FANOUT_FKS, FANOUT_PREDICATE, fanout_tables, posix_only
 
 
 # Finding 1 + 6: a user column named "rowid" must not corrupt row identity / replay.
@@ -76,6 +76,7 @@ def _sleeping_child(conn: Connection) -> None:
 
 
 # Finding 3: a child dying mid-message must not hang the parent.
+@posix_only  # writes raw bytes to the pipe's file descriptor (a HANDLE on Windows)
 def test_partial_message_does_not_hang_parent() -> None:
     events: list[Any] = []
     start = time.monotonic()

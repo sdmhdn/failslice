@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main, "phase-*/**", "ci/**"]
   pull_request:
   workflow_dispatch:
 
@@ -9,7 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A push and a pull request for the same branch share one group (no duplicate matrix).
+  group: ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

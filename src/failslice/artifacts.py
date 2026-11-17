@@ -296,7 +296,9 @@ def finalize(
 
     def do_explain() -> None:
         explanation.append(explain(run_dir, limit=explain_limit, deadline=deadline))
-        (run_dir / EXPLAIN_FILE).write_text(explanation[0].model_dump_json(indent=2) + "\n")
+        (run_dir / EXPLAIN_FILE).write_text(
+            explanation[0].model_dump_json(indent=2) + "\n", encoding="utf-8"
+        )
 
     steps.run("explain", do_explain, skip=no_spec)
     manifest_without_report = _manifest(context, result, steps.done, ())

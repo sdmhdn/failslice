@@ -87,5 +87,7 @@ source = ["failslice"]
 branch = true
 # Measure the supervisor's spawned children too (killed children do not report).
 concurrency = ["multiprocessing", "thread"]
+# Also measure plain subprocesses (replay, `python -m failslice.cli` in tests).
+patch = ["subprocess"]
 parallel = true
 sigterm = true

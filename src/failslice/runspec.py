@@ -132,14 +132,14 @@ class RunSpec(_Model):
 
     def write(self, run_dir: Path) -> None:
         """Write ``spec.json`` into ``run_dir``."""
-        (run_dir / SPEC_FILE).write_text(self.model_dump_json(indent=2) + "\n")
+        (run_dir / SPEC_FILE).write_text(self.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
     @classmethod
     def read(cls, run_dir: str | Path) -> RunSpec:
         """Read and validate ``spec.json`` from ``run_dir``."""
         path = Path(run_dir) / SPEC_FILE
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RunSpecError(f"cannot read {path}: {exc}") from exc
         if not isinstance(data, dict) or data.get("format") != FORMAT:

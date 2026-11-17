@@ -244,6 +244,7 @@ def _stalled_frame_child(conn: Connection) -> None:
     time.sleep(600)
 
 
+@posix_only  # writes raw bytes to the pipe's file descriptor (a HANDLE on Windows)
 def test_stalled_live_writer_is_killed_on_deadline() -> None:
     start = time.monotonic()
     kill = _pump(_stalled_frame_child, (), time.monotonic() + 2, lambda k, v: False, None, 1.0)
