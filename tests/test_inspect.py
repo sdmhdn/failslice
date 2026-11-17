@@ -7,7 +7,7 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import duckdb
 import pytest
@@ -296,6 +296,43 @@ def test_many_wide_tables_fit_budget_with_explicit_flags(tmp_path: Path) -> None
         assert t.preview.truncated_cells == len(t.preview.rows) * 50
 
 
+@pytest.mark.parametrize("suffix", [".csv", ".parquet", ".duckdb"])
+def test_schema_column_limit_boundary_before_aggregates(tmp_path: Path, suffix: str) -> None:
+    for width in (128, 129):
+        query = "SELECT " + ", ".join(f"{i} AS c{i}" for i in range(width))
+        path = tmp_path / f"wide{width}{suffix}"
+        if suffix == ".duckdb":
+            with duckdb.connect(str(path)) as con:
+                con.execute(f"CREATE TABLE wide AS {query}")
+        else:
+            _write(path, query)
+        with duckdb.connect(":memory:") as con:
+            audited = Mock(wraps=con)
+            with patch("failslice.inspect.duckdb.connect") as connect:
+                connect.return_value.__enter__.return_value = audited
+                if width == 128:
+                    result = inspect_tables({"wide": path}, root=tmp_path, base_dir=tmp_path)
+                    assert len(result.tables[0].columns) == 128
+                    assert result.tables[0].rows == 1
+                    assert all(c.nulls == 0 and c.distinct == 1 for c in result.tables[0].columns)
+                else:
+                    with pytest.raises(ConfigError, match=r"table 'wide'.*129.*maximum is 128"):
+                        inspect_tables({"wide": path}, root=tmp_path, base_dir=tmp_path)
+            statements = [call.args[0] for call in audited.execute.call_args_list]
+        assert any(sql.startswith("DESCRIBE ") for sql in statements)
+        if width == 129:
+            assert not any("count(" in sql.lower() for sql in statements)
+            assert statements[-1].startswith("DESCRIBE ")
+
+
+def test_schema_column_limit_can_be_lowered(tmp_path: Path) -> None:
+    limits = Limits(max_schema_columns=2)
+    result = _inspect(tmp_path, "SELECT 1 AS a, 2 AS b", limits=limits)
+    assert len(result.tables[0].columns) == 2
+    with pytest.raises(ConfigError, match=r"table 't'.*3.*maximum is 2"):
+        _inspect(tmp_path, "SELECT 1 AS a, 2 AS b, 3 AS c", limits=limits)
+
+
 def test_budget_discards_largest_table_suffix_first(tmp_path: Path) -> None:
     small = _write(tmp_path / "small.parquet", "SELECT i AS id FROM range(3) r(i)")
     large = _write(
@@ -445,7 +482,9 @@ def test_too_many_tables_rejected_before_read(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("names", [["bad-name"], ["1bad"], ["__FS_private"], ["A", "a"], []])
+@pytest.mark.parametrize(
+    "names", [["bad-name"], ["1bad"], ["__FS_private"], ["A", "a"], ["valid\n"], []]
+)
 def test_table_names_match_config_rules(tmp_path: Path, names: list[str]) -> None:
     path = _write(tmp_path / "t.parquet", "SELECT 1 AS id")
     with pytest.raises(ConfigError):
@@ -560,6 +599,10 @@ def test_unknown_format_table_and_invalid_base_rejected(tmp_path: Path) -> None:
         {"reply_bytes": 0},
         {"max_tables": 0},
         {"max_tables": 33},
+        {"max_schema_columns": 0},
+        {"max_schema_columns": 129},
+        {"max_schema_columns": True},
+        {"max_schema_columns": 1.0},
         {"preview_rows": True},
         {"preview_rows": 1.0},
         {"extra": 1},

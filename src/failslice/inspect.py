@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from pathlib import Path
@@ -54,13 +55,14 @@ class _Model(BaseModel):
 
 
 class Limits(_Model):
-    """Preview and reply ceilings; zero preview rows suppresses all row values."""
+    """Schema, preview and reply ceilings; zero preview rows suppresses row values."""
 
     preview_rows: Annotated[int, Field(ge=0, le=20, strict=True)] = 10
     max_columns: Annotated[int, Field(ge=1, le=50, strict=True)] = 50
     cell_bytes: Annotated[int, Field(ge=1, strict=True)] = 1024
     reply_bytes: Annotated[int, Field(ge=1, strict=True)] = 65536
     max_tables: Annotated[int, Field(ge=1, le=32, strict=True)] = 32
+    max_schema_columns: Annotated[int, Field(ge=1, le=128, strict=True)] = 128
 
 
 _DEFAULT_LIMITS = Limits()
@@ -221,6 +223,11 @@ def _profile(
 ) -> tuple[TableInspection, tuple[int, ...]]:
     """Aggregate every row and column before building the separately bounded preview."""
     schema = [(str(row[0]), str(row[1])) for row in con.execute(f"DESCRIBE {stage}").fetchall()]
+    if len(schema) > limits.max_schema_columns:
+        raise ConfigError(
+            f"table {name!r}: schema has {len(schema)} columns; "
+            f"maximum is {limits.max_schema_columns}"
+        )
     expressions = ["count(*)"]
     for column, dtype in schema:
         expressions.extend(
@@ -334,6 +341,9 @@ def inspect_tables(
     """
     if len(tables) > limits.max_tables:
         raise ConfigError(f"too many tables: maximum is {limits.max_tables}")
+    for name in tables:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+            raise ConfigError(f"table name {name!r} must be a plain SQL identifier")
     root = literal_path(root.resolve())
     base_dir = resolve_inside(Path.cwd(), base_dir, root)
     if not root.is_dir() or not base_dir.is_dir():

@@ -177,6 +177,9 @@ def verify_in_subprocess(
 
     The pipes are drained while waiting (no deadlock on large output); on timeout or when
     ``cancel`` is set the process is killed and reaped."""
+    if cancel is not None and cancel.is_set():
+        return VerificationReport("cancelled", detail="replay cancelled", process="subprocess")
+    deadline = time.monotonic() + timeout_s
     proc = subprocess.Popen(
         [sys.executable, "-m", "failslice.verify", str(run_dir)],
         stdout=subprocess.PIPE,
@@ -184,26 +187,35 @@ def verify_in_subprocess(
         text=True,
         encoding="utf-8",
     )
-    deadline = time.monotonic() + timeout_s
     stopped: str | None = None
+    stdout = stderr = ""
     try:
         while True:
+            left = deadline - time.monotonic()
             try:
-                stdout, stderr = proc.communicate(timeout=0.2)
-                break
+                # Bounded by the time left; communicate() keeps reading both pipes.
+                stdout, stderr = proc.communicate(timeout=max(0.0, min(0.2, left)))
             except subprocess.TimeoutExpired:
-                if cancel is not None and cancel.is_set():
-                    stopped = "cancelled"
-                elif time.monotonic() > deadline:
-                    stopped = "timeout"
-                if stopped:
-                    proc.kill()
-                    proc.communicate()  # reap
-                    break
+                pass
+            else:
+                break
+            if cancel is not None and cancel.is_set():
+                stopped = "cancelled"
+            elif time.monotonic() >= deadline:
+                stopped = "timeout"
+            if stopped:
+                proc.kill()
+                proc.communicate()  # reap
+                break
     except BaseException:
         proc.kill()
         proc.communicate()
         raise
+    # A result that arrives after a cancel or past the deadline is not accepted.
+    if stopped is None and cancel is not None and cancel.is_set():
+        stopped = "cancelled"
+    elif stopped is None and time.monotonic() > deadline:
+        stopped = "timeout"
     if stopped == "cancelled":
         return VerificationReport("cancelled", detail="replay cancelled", process="subprocess")
     if stopped == "timeout":

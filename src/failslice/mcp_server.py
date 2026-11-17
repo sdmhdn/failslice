@@ -33,6 +33,7 @@ from failslice.api import (
     CheckReport,
     ReductionResult,
     check,
+    classify,
     new_run_id,
     reduce,
     validate_predicate,
@@ -57,7 +58,7 @@ from failslice.inference import (
 from failslice.inspect import DatasetInspection, Limits, inspect_tables
 from failslice.pytest_export import ExportError, build_bundle
 from failslice.reducer import DeterminismError, PredicateNotFailingError, ProgressEvent
-from failslice.runspec import RunSpec, RunSpecError
+from failslice.runspec import SPEC_FILE, RunSpec, RunSpecError
 from failslice.safety import PredicateValidationError
 from failslice.verify import verify_in_subprocess
 
@@ -65,7 +66,7 @@ __all__ = ["ServerLimits", "create_server", "main"]
 
 REPLY_FORMAT = 1
 _RUN_ID = re.compile(RUN_ID_PATTERN)
-_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_TEST_NAME = re.compile(r"[a-z_][a-z0-9_]*")
 
 INSTRUCTIONS = """\
 FailSlice shrinks multi-table data (CSV / Parquet / DuckDB files inside the server's root)
@@ -290,7 +291,8 @@ def _rel(root: Path, path: Path) -> str:
 
 def _reply(model: Reply[Any], limits: ServerLimits) -> CallToolResult:
     text = model.model_dump_json()
-    if len(text.encode()) > limits.reply_bytes:
+    # The reply carries the JSON twice (text content and structured content).
+    if 2 * len(text.encode()) + 512 > limits.reply_bytes:
         model = Reply[Any](
             status="error",
             error=ErrorInfo(
@@ -303,7 +305,9 @@ def _reply(model: Reply[Any], limits: ServerLimits) -> CallToolResult:
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=json.loads(text),
-        is_error=model.error is not None,
+        # Domain outcomes ("failed", "replay-failed", ...) are ordinary results; only
+        # invocation and internal errors are marked as tool errors.
+        is_error=model.status == "error",
     )
 
 
@@ -429,8 +433,6 @@ def _project(
         if not base.is_dir():
             raise _Fail("not_found", f"base_dir {base_dir!r} is not a directory", field="base_dir")
         data = config.model_dump(mode="json", exclude_unset=True)
-        if config.settings is not None:
-            data["settings"] = config.settings.model_dump(mode="json")
         if len(json.dumps(data).encode()) > limits.config_bytes:
             raise _Fail("too_large", f"config exceeds {limits.config_bytes} bytes")
         project = parse_project(data, base_dir=base, root=root)
@@ -472,6 +474,21 @@ def _project(
     return project
 
 
+def _timeout(state: _State, requested: float | None) -> float:
+    """Replay timeout: explicit values may not exceed the server's wall-clock ceiling;
+    the default (300 s) is lowered to it."""
+    ceiling = state.limits.wall_clock_s
+    if requested is None:
+        return min(300.0, ceiling)
+    if requested > ceiling:
+        raise _Fail(
+            "over_ceiling",
+            f"timeout_s={requested} exceeds the server's ceiling {ceiling}",
+            field="timeout_s",
+        )
+    return requested
+
+
 def _runs_dir(state: _State) -> Path:
     path = resolve_inside(state.root, Path(".failslice") / "runs", state.root)
     return path
@@ -480,45 +497,71 @@ def _runs_dir(state: _State) -> Path:
 def _run_dir(state: _State, run_id: str) -> Path:
     runs = _runs_dir(state)
     if run_id == "latest":
-        latest = _list_runs(state)
-        if not latest:
+        finalized = [r for r in _list_runs(state) if r["status"] in FINAL_STATUSES]
+        if not finalized:
             raise _Fail("not_found", "there are no finalized runs yet", field="run_id")
-        run_id = latest[0]["run_id"]
-    if not _RUN_ID.match(run_id):
+        run_id = finalized[0]["run_id"]
+    if not _RUN_ID.fullmatch(run_id):
         raise _Fail("invalid_run_id", f"invalid run id {run_id!r}", field="run_id")
+    candidate = runs / run_id
+    if candidate.is_symlink():
+        raise _Fail("not_found", f"no run {run_id!r}", field="run_id")
     path = resolve_inside(runs, run_id, state.root)
     if not path.is_dir() or path.parent != runs:
         raise _Fail("not_found", f"no run {run_id!r}", field="run_id")
     return path
 
 
+def _run_file(state: _State, run_dir: Path, name: str) -> Path:
+    """A fixed artifact of a run: no symlinks, inside the run, a regular file of bounded
+    size (a FIFO or device would block a read)."""
+    candidate = run_dir / name
+    if candidate.is_symlink():
+        raise _Fail("not_found", f"the run's {name} is a symlink; refusing to follow it")
+    path = resolve_inside(run_dir, name, state.root)
+    if path.parent != run_dir or not path.is_file():
+        raise _Fail("not_found", f"the run has no {name} (not finished?)")
+    if path.stat().st_size > state.limits.resource_bytes:
+        raise _Fail("too_large", f"the run's {name} exceeds {state.limits.resource_bytes} bytes")
+    return path
+
+
+FINAL_STATUSES = frozenset({"reduced", "no-candidate", "cancelled"})
+
+
 def _list_runs(state: _State) -> list[dict[str, Any]]:
+    """Runs, newest finalized first (by recorded finish time), then incomplete ones."""
     runs = _runs_dir(state)
     if not runs.is_dir():
         return []
-    out = []
+    finalized: list[dict[str, Any]] = []
+    other: list[dict[str, Any]] = []
     for d in sorted(runs.iterdir(), reverse=True):
-        if not (d.is_dir() and _RUN_ID.match(d.name)):
+        if d.is_symlink() or not (d.is_dir() and _RUN_ID.fullmatch(d.name)):
             continue
-        manifest = d / MANIFEST_FILE
-        if manifest.is_file():
-            try:
-                m = json.loads(manifest.read_text(encoding="utf-8"))
-                out.append(
-                    {
-                        "run_id": d.name,
-                        "status": m.get("status"),
-                        "minimality": m.get("minimality"),
-                        "created_at": m.get("created_at"),
-                    }
-                )
-            except (OSError, ValueError):
-                out.append({"run_id": d.name, "status": "unreadable"})
-        else:
-            out.append({"run_id": d.name, "status": "incomplete"})
-    return [r for r in out if r["status"] not in ("incomplete",)] + [
-        r for r in out if r["status"] == "incomplete"
-    ]
+        try:
+            m = json.loads(_run_file(state, d, MANIFEST_FILE).read_text(encoding="utf-8"))
+        except _Fail:
+            other.append({"run_id": d.name, "status": "incomplete"})
+            continue
+        except (OSError, ValueError):
+            other.append({"run_id": d.name, "status": "unreadable"})
+            continue
+        status = m.get("status") if isinstance(m, dict) else None
+        if status not in FINAL_STATUSES or m.get("run_id") != d.name:
+            other.append({"run_id": d.name, "status": "unreadable"})
+            continue
+        finalized.append(
+            {
+                "run_id": d.name,
+                "status": status,
+                "minimality": m.get("minimality"),
+                "created_at": m.get("created_at"),
+                "finished_at": m.get("finished_at"),
+            }
+        )
+    finalized.sort(key=lambda r: (str(r.get("finished_at")), r["run_id"]), reverse=True)
+    return finalized + other
 
 
 def _summary(state: _State, result: ReductionResult) -> RunSummary:
@@ -546,15 +589,28 @@ def _summary(state: _State, result: ReductionResult) -> RunSummary:
     )
 
 
+def _runs_page(state: _State, page: int) -> str:
+    if page < 1:
+        raise _Fail("not_found", "pages start at 1")
+    size = state.limits.runs_page
+    runs = _list_runs(state)
+    chunk = runs[(page - 1) * size : page * size]
+    more = len(runs) > page * size
+    doc = {
+        "page": page,
+        "runs": chunk,
+        "next": f"failslice://runs/page/{page + 1}" if more else None,
+    }
+    return json.dumps(doc, indent=2)
+
+
 def _artifact(state: _State, run_id: str, name: str) -> str:
-    path = _run_dir(state, run_id) / name
-    if not path.is_file():
-        raise _Fail("not_found", f"the run has no {name} (not finished?)")
-    return path.read_text(encoding="utf-8")
+    return _run_file(state, _run_dir(state, run_id), name).read_text(encoding="utf-8")
 
 
 def _preview(state: _State, run_id: str, table: str) -> str:
     run_dir = _run_dir(state, run_id)
+    _run_file(state, run_dir, SPEC_FILE)
     spec = RunSpec.read(run_dir)
     if table not in spec.tables:
         raise _Fail("not_found", f"no table {table!r} in run {run_dir.name}")
@@ -724,8 +780,8 @@ def create_server(root: str | Path, limits: ServerLimits | None = None) -> MCPSe
                 cancel=cancel,
             )
             summary = _summary(state, result)
-            ok = result.status == "reduced" and bool(result.verification and result.verification.ok)
-            return Reply[RunSummary](status="reduced" if ok else result.status, data=summary)
+            status, _kind = classify(result)
+            return Reply[RunSummary](status=status, data=summary)
 
         return await _guarded(state, ctx, work)
 
@@ -736,11 +792,14 @@ def create_server(root: str | Path, limits: ServerLimits | None = None) -> MCPSe
     async def verify_reproducer(
         ctx: Context,
         run_id: str,
-        timeout_s: Annotated[float, Field(gt=0, le=900)] = 300,
+        timeout_s: Annotated[float | None, Field(gt=0)] = None,
     ) -> Annotated[CallToolResult, Reply[VerifyData]]:
         def work(cancel: threading.Event, progress: _Progress) -> Reply[Any]:
             run_dir = _run_dir(state, run_id)
-            report = verify_in_subprocess(run_dir, timeout_s=timeout_s, cancel=cancel)
+            _run_file(state, run_dir, SPEC_FILE)
+            report = verify_in_subprocess(
+                run_dir, timeout_s=_timeout(state, timeout_s), cancel=cancel
+            )
             data = VerifyData(
                 run_id=run_dir.name,
                 status=report.status,
@@ -764,6 +823,7 @@ def create_server(root: str | Path, limits: ServerLimits | None = None) -> MCPSe
     ) -> Annotated[CallToolResult, Reply[Explanation]]:
         def work(cancel: threading.Event, progress: _Progress) -> Reply[Any]:
             run_dir = _run_dir(state, run_id)
+            _run_file(state, run_dir, SPEC_FILE)
             ex = explain(run_dir, limit=min(limit, lim.explain_keys))
             return Reply[Explanation](status="ok", data=ex)
 
@@ -779,13 +839,18 @@ def create_server(root: str | Path, limits: ServerLimits | None = None) -> MCPSe
         run_id: str,
         name: str | None = None,
         expect: Literal["fails", "passes"] = "fails",
-        timeout_s: Annotated[float, Field(gt=0, le=900)] = 300,
+        timeout_s: Annotated[float | None, Field(gt=0)] = None,
     ) -> Annotated[CallToolResult, Reply[ExportData]]:
         def work(cancel: threading.Event, progress: _Progress) -> Reply[Any]:
             run_dir = _run_dir(state, run_id)
-            if name is not None and not _IDENT.match(name):
-                raise _Fail("invalid_name", f"invalid test name {name!r}", field="name")
-            report = verify_in_subprocess(run_dir, timeout_s=timeout_s, cancel=cancel)
+            if name is not None and not _TEST_NAME.fullmatch(name):
+                raise _Fail(
+                    "invalid_name", f"test name {name!r} must match [a-z_][a-z0-9_]*", field="name"
+                )
+            _run_file(state, run_dir, SPEC_FILE)
+            report = verify_in_subprocess(
+                run_dir, timeout_s=_timeout(state, timeout_s), cancel=cancel
+            )
             if not report.ok:
                 return Reply[ExportData](
                     status=report.status,
@@ -798,7 +863,13 @@ def create_server(root: str | Path, limits: ServerLimits | None = None) -> MCPSe
                 state.root, Path(".failslice") / "exports" / run_dir.name, state.root
             )
             exports.mkdir(parents=True, exist_ok=True)
-            dest = exports / (name or f"{expect}-{len(list(exports.iterdir())) + 1}")
+            leaf = name or f"{expect}-{len(list(exports.iterdir())) + 1}"
+            entry = exports / leaf
+            if entry.exists() or entry.is_symlink():  # also a dangling symlink
+                raise _Fail("exists", f"export {leaf!r} already exists", field="name")
+            dest = resolve_inside(exports, leaf, state.root)
+            if dest.parent != exports:  # pragma: no cover - leaf is a validated plain name
+                raise _Fail("invalid_name", f"invalid export name {leaf!r}", field="name")
             bundle = build_bundle(run_dir, dest, name=name, expect=expect)
             data = ExportData(
                 run_id=run_dir.name,
@@ -814,7 +885,7 @@ def create_server(root: str | Path, limits: ServerLimits | None = None) -> MCPSe
 
     # -------------------------------------------------------------- resources
     def _bounded(text: str) -> str:
-        if len(text.encode()) > lim.resource_bytes:
+        if len(json.dumps(text).encode()) + 512 > lim.resource_bytes:
             raise ResourceError(f"the resource exceeds {lim.resource_bytes} bytes")
         return text
 
@@ -833,7 +904,16 @@ def create_server(root: str | Path, limits: ServerLimits | None = None) -> MCPSe
         mime_type="application/json",
     )
     def runs_index() -> str:
-        return _resource(lambda: json.dumps(_list_runs(state)[: lim.runs_page], indent=2))
+        return _resource(lambda: _runs_page(state, 1))
+
+    @server.resource(
+        "failslice://runs/page/{page}",
+        name="runs-page",
+        description="Further pages of the run list (50 per page, page 1 = failslice://runs).",
+        mime_type="application/json",
+    )
+    def runs_page(page: str) -> str:
+        return _resource(lambda: _runs_page(state, int(page) if page.isdigit() else 0))
 
     @server.resource(
         "failslice://runs/{run_id}/manifest",

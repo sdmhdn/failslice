@@ -107,7 +107,7 @@ def test_full_workflow(project: Project) -> None:
             report = await c.read_resource("failslice://runs/latest/report")
             assert "1-minimal (verified)" in report.contents[0].text  # type: ignore[union-attr]
             runs = await c.read_resource("failslice://runs")
-            assert json.loads(runs.contents[0].text)[0]["run_id"] == run_id  # type: ignore[union-attr]
+            assert json.loads(runs.contents[0].text)["runs"][0]["run_id"] == run_id  # type: ignore[union-attr]
             preview = await c.read_resource(f"failslice://runs/{run_id}/tables/orders/preview")
             assert json.loads(preview.contents[0].text)["rows"] == 2  # type: ignore[union-attr]
 

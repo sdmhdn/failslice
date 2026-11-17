@@ -72,24 +72,32 @@ Runs are addressed by `run_id` (returned by `reduce_failure`) or `latest`.
 ### Budgets and concurrency
 
 - An explicit budget above the server's ceiling is rejected (`over_ceiling`); defaults that
-  nobody set are lowered to the ceiling. The reply reports the effective settings.
+  nobody set are lowered to the ceiling. The reply reports the effective settings. Replay
+  timeouts (`verify_reproducer`, `export_pytest`) may not exceed the wall-clock ceiling.
 - One expensive operation runs at a time; a second call gets `busy` (retryable). Resources
   stay readable.
 - Cancelling a request kills the work it started (the reduction child process, a replay).
   A cancelled run is not recovered or verified; its manifest and report record the
-  cancellation. Artifact steps that are already running (CSV, bundle, explain) finish first.
+  cancellation. Artifact steps that are already running (CSV, bundle, explain) finish first;
+  a cancel that arrives while artifacts are written still turns the outcome into
+  `cancelled`.
+- `reduce_failure` reports the run's real outcome as its status: `reduced` only for a
+  verified reproducer, otherwise `replay-failed`, `integrity-failed`, `unverified`,
+  `no-candidate`, `cancelled` or `failed` (e.g. the predicate is never TRUE). These are
+  ordinary results; only invalid input and internal errors are marked as tool errors.
 
 ## Resources
 
 | URI | content |
 |---|---|
-| `failslice://runs` | runs, newest first (at most 50): id, status, minimality, creation time |
+| `failslice://runs` | finalized runs, newest first by finish time, then incomplete ones: 50 per page with a `next` link |
+| `failslice://runs/page/{page}` | further pages of the same list |
 | `failslice://runs/{run_id}/manifest` | `manifest.json` |
 | `failslice://runs/{run_id}/report` | `report.md` |
 | `failslice://runs/{run_id}/tables/{table}/preview` | first rows of a reduced table, with exact counts |
 
-`{run_id}` may be `latest`. Only these artifacts are readable; there is no generic file
-reader.
+`{run_id}` may be `latest`: the most recently finished run with a valid manifest. Only
+these artifacts are readable (never through a symlink); there is no generic file reader.
 
 ## Prompt
 
@@ -102,9 +110,11 @@ description to an exported test.
 - Every path is resolved (symlinks followed) and must stay inside the root; glob
   characters, FIFOs and devices are refused. Predicates are validated as everywhere else,
   and DuckDB's external file access is switched off after loading.
-- Size limits: 64 KiB per config, 16 KiB of predicate SQL, 32 tables, 64 KiB per tool
-  reply, 256 KiB per resource; previews at most 20 rows and 50 columns with cells cut in
-  SQL.
+- Size limits: 64 KiB per config, 16 KiB of predicate SQL, 32 tables, 128 columns per
+  inspected table, 64 KiB per tool reply (counting both copies of the JSON), 256 KiB per
+  resource; previews at most 20 rows and 50 columns with cells cut in SQL. Replies to
+  malformed tool arguments are produced by the MCP SDK's argument validation and are not
+  bounded by FailSlice.
 - The root is an authorization, not a secret: an agent connected to the server can read
   the supported data files inside it. Data values are untrusted content; the server's
   instructions tell the agent so.

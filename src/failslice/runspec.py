@@ -44,6 +44,7 @@ __all__ = [
 ]
 
 SPEC_FILE = "spec.json"
+MAX_SPEC_BYTES = 16 * 1024 * 1024
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FORMAT = 3
 
@@ -122,7 +123,7 @@ class RunSpec(_Model):
         every foreign key must parse and refer to listed tables (a tampered spec must not
         steer file writes or SQL)."""
         for name in self.tables:
-            if not _IDENT.match(name) or name.lower().startswith(RESERVED_PREFIX):
+            if not _IDENT.fullmatch(name) or name.lower().startswith(RESERVED_PREFIX):
                 raise ValueError(f"invalid table name {name!r}")
         for text in self.foreign_keys:
             fk = ForeignKey.parse(text)
@@ -138,6 +139,10 @@ class RunSpec(_Model):
     def read(cls, run_dir: str | Path) -> RunSpec:
         """Read and validate ``spec.json`` from ``run_dir``."""
         path = Path(run_dir) / SPEC_FILE
+        if not path.is_file():  # missing, or a FIFO / device that would block the read
+            raise RunSpecError(f"{path} is missing or not a regular file")
+        if path.stat().st_size > MAX_SPEC_BYTES:
+            raise RunSpecError(f"{path} exceeds {MAX_SPEC_BYTES} bytes")
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:

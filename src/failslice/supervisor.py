@@ -406,7 +406,7 @@ def run_supervised(
         and result.unconfirmed_stats is None
         and result.killed_reason != CANCELLED  # a cancelled run is not recovered
     ):
-        _recover(project, run_dir, run_id, result, deadline, grace_s)
+        _recover(project, run_dir, run_id, result, deadline, grace_s, cancel)
     if result.stats is None and result.unconfirmed_stats is None and result.sizes_before:
         # Stopped (killed or crashed) before any confirmed configuration: keep what the
         # parent observed. Completed evaluations come from the last progress event.
@@ -439,7 +439,10 @@ def _recover(
     result: SupervisedOutcome,
     deadline: float,
     grace_s: float,
+    cancel: threading.Event | None = None,
 ) -> None:
+    if cancel is not None and cancel.is_set():
+        return  # a cancelled run is never recovered
     if read_checkpoint(run_dir, run_id) is None:
         return
     result.has_checkpoint = True
@@ -462,7 +465,11 @@ def _recover(
         on_event,
         None,
         grace_s,
+        cancel,
     )
+    if kill == CANCELLED:
+        result.killed_reason = CANCELLED
+        return
     if "sizes" not in recovered:
         reason = f"recovery stopped: {kill}" if kill else "recovery failed"
         result.error = "; ".join(x for x in (result.error, reason) if x)

@@ -10,6 +10,7 @@ manifest. ``manifest.json`` is written atomically and last.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as _dt
 import hashlib
 import json
@@ -155,7 +156,7 @@ def project_config(project: Project) -> dict[str, Any]:
 
 
 def _now() -> str:
-    return _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
+    return _dt.datetime.now(_dt.UTC).isoformat(timespec="microseconds")
 
 
 def _sha256(path: Path) -> str:
@@ -312,6 +313,15 @@ def finalize(
         )
 
     steps.run("explain", do_explain, skip=no_spec)
+    if cancel is not None and cancel.is_set() and result.status != "cancelled":
+        # Cancelled while artifacts were being written: the run's outcome is "cancelled"
+        # (the step history above shows what was finished before).
+        result = dataclasses.replace(
+            result,
+            status="cancelled",
+            failure="cancelled",
+            notes=[*result.notes, "cancelled by the caller while writing artifacts"],
+        )
     manifest_without_report = _manifest(context, result, steps.done, ())
     # The report is written regardless of the deadline or a cancel (bounded by metadata size).
     steps.deadline = None

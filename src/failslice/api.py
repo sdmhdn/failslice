@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as _dt
 import secrets
 import threading
@@ -243,8 +244,7 @@ def reduce(
     if stats is None or not stats.confirmed:
         notes.append("stopped before any configuration was confirmed TRUE")
         result = ReductionResult(run_dir, "no-candidate", stats, None, notes, failure=failure)
-        result.manifest = finalize(context, result, deadline=deadline, cancel=cancel)
-        return result
+        return _finish(context, result, deadline, cancel)
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         verification = VerificationReport(
@@ -257,7 +257,23 @@ def reduce(
     spec = RunSpec.read(run_dir)
     notes.extend(spec.warnings)
     result = ReductionResult(run_dir, "reduced", stats, verification, notes, spec, failure=failure)
-    result.manifest = finalize(context, result, deadline=deadline, cancel=cancel)
+    return _finish(context, result, deadline, cancel)
+
+
+def _finish(
+    context: RunContext,
+    result: ReductionResult,
+    deadline: float,
+    cancel: threading.Event | None,
+) -> ReductionResult:
+    """Write the artifacts; a cancel that arrives meanwhile turns the outcome into
+    ``cancelled`` (the manifest records the same)."""
+    manifest = finalize(context, result, deadline=deadline, cancel=cancel)
+    if manifest.status == "cancelled" and result.status != "cancelled":
+        result = dataclasses.replace(
+            result, status="cancelled", failure="cancelled", notes=list(manifest.notes)
+        )
+    result.manifest = manifest
     return result
 
 
@@ -271,8 +287,7 @@ def _cancelled(
 ) -> ReductionResult:
     notes.append("cancelled by the caller: no recovery, replay or further artifacts")
     result = ReductionResult(run_dir, "cancelled", stats, None, notes, failure="cancelled")
-    result.manifest = finalize(context, result, deadline=deadline, cancel=cancel)
-    return result
+    return _finish(context, result, deadline, cancel)
 
 
 def _supervised_stats(sup: SupervisedOutcome, notes: list[str]) -> ReductionStats | None:
@@ -316,6 +331,31 @@ def _reduce_in_process(
         return stats
     finally:
         engine.close()
+
+
+def classify(result: ReductionResult) -> tuple[str, str]:
+    """The outcome of a finished reduction as ``(status, kind)``, from the recorded reason.
+
+    ``status``: ``reduced`` (verified reproducer), ``cancelled``, ``no-candidate``,
+    ``unverified``, ``replay-failed``, ``integrity-failed``, ``artifact-error`` or ``error``.
+    ``kind`` is the CLI exit class: ``ok``, ``failed``, ``inconclusive``, ``error`` or
+    ``interrupted``. Shared by the CLI and the MCP server.
+    """
+    if result.status == "cancelled":
+        return "cancelled", "interrupted"
+    if result.status == "no-candidate":
+        if result.failure == "crashed":
+            return "error", "error"
+        return "no-candidate", "inconclusive"
+    v = result.verification
+    if v is None or v.status == "unverified":
+        return "unverified", "inconclusive"
+    if not v.ok:
+        return v.status, "failed"
+    m = result.manifest
+    if m is not None and any(st.status == "failed" for st in m.steps):
+        return "artifact-error", "error"
+    return "reduced", "ok"
 
 
 def verify(run_dir: str | Path, *, timeout_s: float = 300.0) -> VerificationReport:
