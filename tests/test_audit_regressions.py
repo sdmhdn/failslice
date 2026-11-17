@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import dataclasses
 import decimal
 import json
 import os
 import struct
+import threading
 import time
 from collections.abc import Callable
 from multiprocessing.connection import Connection
@@ -484,6 +486,29 @@ def test_killed_before_confirmation_keeps_stats(
     assert stats is not None and not stats.confirmed
     assert stats.evaluations_started == sup.evaluations_started >= 1
     assert stats.sizes_before == {"customers": 30, "orders": 121, "lines": 400}
+    assert stats.elapsed_s > 1 and "per-outcome counts are unavailable" in (stats.minimality_detail)
+
+
+def test_no_progress_delivered_after_close() -> None:
+    from failslice.supervisor import _ProgressDispatcher
+
+    got: list[int] = []
+    release = threading.Event()
+
+    def blocking(ev: ProgressEvent) -> None:
+        got.append(ev.evaluations)
+        release.wait(10)
+
+    d = _ProgressDispatcher(blocking)
+    ev = ProgressEvent("reduce", None, 1, 0, 1, 1, 0.0, False)
+    d.post(ev)
+    time.sleep(0.2)  # the first event is now inside the blocked callback
+    d.post(dataclasses.replace(ev, evaluations=2))
+    d.close(0.2)
+    d.post(dataclasses.replace(ev, evaluations=3))
+    release.set()
+    time.sleep(0.3)
+    assert got == [1]  # the pending and the late event were dropped
 
 
 # Second review, finding 7: in-process runs write the initial checkpoint too.

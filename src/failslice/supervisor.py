@@ -193,13 +193,15 @@ class _ProgressDispatcher:
         self._cond = threading.Condition()
         self._pending: ProgressEvent | None = None
         self._closed = False
+        self._abandoned = False
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def post(self, event: ProgressEvent) -> None:
         with self._cond:
-            self._pending = event
-            self._cond.notify()
+            if not self._closed:
+                self._pending = event
+                self._cond.notify()
 
     def _run(self) -> None:
         while True:
@@ -207,7 +209,7 @@ class _ProgressDispatcher:
                 while self._pending is None and not self._closed:
                     self._cond.wait()
                 event, self._pending = self._pending, None
-                if event is None:
+                if event is None or self._abandoned:
                     return
             with contextlib.suppress(Exception):  # a failing callback must not stop the run
                 self._callback(event)
@@ -215,13 +217,17 @@ class _ProgressDispatcher:
     def close(self, timeout_s: float) -> None:
         """Deliver the last pending event if the callback keeps up within ``timeout_s``.
 
-        A callback that is still blocked after that is abandoned: its (daemon) thread ends
-        when the callback returns, and it receives no further events. Python cannot stop
-        a running callback, so callers should keep callbacks non-blocking."""
+        A callback that is still running after that is abandoned: once ``close`` returns,
+        no further event is delivered, and the (daemon) thread ends as soon as the running
+        call returns. Python cannot interrupt a running callback, so a callback that blocks
+        forever keeps its thread alive; keep callbacks non-blocking."""
         with self._cond:
             self._closed = True
             self._cond.notify()
         self._thread.join(timeout_s)
+        with self._cond:
+            self._abandoned = True
+            self._pending = None
 
 
 _EOF = object()
@@ -391,7 +397,11 @@ def run_supervised(
         lost.sizes_after = dict(result.sizes_before)
         lost.evaluations = result.last_progress.evaluations if result.last_progress else 0
         lost.stop_reason = StopReason.KILLED if result.killed_reason else lost.stop_reason
-        lost.minimality_detail = f"run stopped: {result.killed_reason or result.error}"
+        lost.elapsed_s = time.monotonic() - start  # as measured by the parent
+        lost.minimality_detail = (
+            f"run stopped: {result.killed_reason or result.error}; per-outcome counts are "
+            "unavailable (the reduction process stopped before reporting them)"
+        )
         result.unconfirmed_stats = lost
     for stats in (result.stats, result.unconfirmed_stats):
         if stats is not None:
