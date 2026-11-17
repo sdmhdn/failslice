@@ -16,8 +16,13 @@ MCP server `failslice-mcp`. The full brief is
 - Check the current stable version before adding any dependency; prefer few, maintained deps.
 - When unsure, pick the simplest design that keeps guarantees honest and record it as a
   short ADR in `docs/decisions/NNNN-title.md`.
-- At the end of every phase, update the Persian user guide `docs/guide-fa.md` (new features,
-  status list, change history). Every Persian line must start with a Persian word.
+- Documentation layout: README (English + a short Persian section) is a concise landing
+  page; full English docs live in `docs/*.md` (index, configuration, predicates,
+  foreign-keys, cli, artifacts); the complete Persian guide is `docs/guide-fa.md`. Keep one
+  detailed source per language; do not duplicate details in the README.
+- At the end of every phase, update only the changed parts of `docs/*.md` and
+  `docs/guide-fa.md` (plus the status list and change history); no rewrites.
+  Every Persian line must start with a Persian word.
 
 ## Codex collaboration
 
