@@ -1,0 +1,149 @@
+"""The run-directory contract: ``spec.json`` (format 2).
+
+:class:`RunSpec` is written by :meth:`failslice.engine.Engine.export` and is the only
+description of a reproducer that replay (``failslice.verify``) and later consumers
+(report, generated pytest, CLI, MCP) read. Every file it names is relative to the run
+directory and must stay inside it.
+
+Column types: ``source_columns`` is the schema as loaded; ``columns`` is the schema of
+the exported Parquet file. They differ where Parquet has no equivalent type (e.g. an
+``ENUM`` is stored as ``VARCHAR``); replay casts such columns back to the source type
+(:func:`restoring_select`), so the predicate sees the same types as during reduction.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from failslice.config import ExpectPredicate, RaisesPredicate, SqlPredicate, literal_path
+
+__all__ = [
+    "SPEC_FILE",
+    "InputFile",
+    "ReplaySettings",
+    "RunSpec",
+    "RunSpecError",
+    "TableEntry",
+    "restoring_select",
+]
+
+SPEC_FILE = "spec.json"
+FORMAT = 2
+
+Column = tuple[str, str]
+
+
+class RunSpecError(ValueError):
+    """The run directory's ``spec.json`` is missing, malformed or points outside it."""
+
+
+class _Model(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class InputFile(_Model):
+    """Identity of one original input file at load time (provenance only; replay never
+    reads it)."""
+
+    path: str
+    sha256: str
+    rows: int | None = None
+    """Rows loaded from it (tables only)."""
+
+
+class TableEntry(_Model):
+    """One exported table."""
+
+    file: str
+    rows: int
+    columns: tuple[Column, ...]
+    """Schema of the exported Parquet file."""
+    source_columns: tuple[Column, ...]
+    """Schema as loaded from the input (what the predicate saw)."""
+
+
+class ReplaySettings(_Model):
+    """Settings replay needs."""
+
+    threads: Annotated[int, Field(ge=1)]
+    eval_timeout_s: Annotated[float, Field(gt=0)]
+
+
+class RunSpec(_Model):
+    """Everything needed to replay and describe a reduced reproducer."""
+
+    format: Literal[2] = 2
+    failslice_version: str
+    duckdb_version: str
+    tables: dict[str, TableEntry]
+    """In parents-first order."""
+    foreign_keys: tuple[str, ...]
+    predicate: Annotated[
+        SqlPredicate | ExpectPredicate | RaisesPredicate, Field(discriminator="kind")
+    ]
+    expected_file: str | None = None
+    """Snapshot of the expectation file (Parquet, inside the run directory)."""
+    expected_yaml: str | None = None
+    """Inline expectation as YAML (keeps types such as dates that JSON would flatten)."""
+    inputs: dict[str, InputFile] = Field(default_factory=dict)
+    """``table:<name>`` and ``expected`` -> original file identity."""
+    settings: ReplaySettings
+    orphans_file: str = "orphans.parquet"
+    rowmap_file: str = "rowmap.parquet"
+    warnings: tuple[str, ...] = ()
+    """Export problems replay cannot repair (e.g. a lossy type round trip)."""
+
+    def write(self, run_dir: Path) -> None:
+        """Write ``spec.json`` into ``run_dir``."""
+        (run_dir / SPEC_FILE).write_text(self.model_dump_json(indent=2) + "\n")
+
+    @classmethod
+    def read(cls, run_dir: str | Path) -> RunSpec:
+        """Read and validate ``spec.json`` from ``run_dir``."""
+        path = Path(run_dir) / SPEC_FILE
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RunSpecError(f"cannot read {path}: {exc}") from exc
+        if not isinstance(data, dict) or data.get("format") != FORMAT:
+            got = data.get("format") if isinstance(data, dict) else None
+            raise RunSpecError(f"{path}: unsupported spec format {got!r} (expected {FORMAT})")
+        try:
+            return cls.model_validate(data)
+        except ValueError as exc:
+            raise RunSpecError(f"{path}: {exc}") from exc
+
+    def resolve(self, run_dir: str | Path, relative: str) -> Path:
+        """Resolve a file named by the spec; it must stay inside ``run_dir`` (after
+        following symlinks) and be a literal path for DuckDB's readers."""
+        root = Path(run_dir).resolve()
+        path = (root / relative).resolve()
+        if not path.is_relative_to(root):
+            raise RunSpecError(f"file outside the run directory: {relative}")
+        try:
+            return literal_path(path)
+        except ValueError as exc:
+            raise RunSpecError(str(exc)) from exc
+
+
+def _q(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def restoring_select(source: str, exported: Sequence[Column], wanted: Sequence[Column]) -> str:
+    """``SELECT`` over ``source`` that casts columns whose exported type differs from
+    the wanted (source) type back to it, keeping column order."""
+    if [c for c, _ in exported] != [c for c, _ in wanted]:
+        raise RunSpecError(
+            f"column names differ: {[c for c, _ in exported]} != {[c for c, _ in wanted]}"
+        )
+    parts = [
+        _q(name) if have == want else f"CAST({_q(name)} AS {want}) AS {_q(name)}"
+        for (name, have), (_, want) in zip(exported, wanted, strict=True)
+    ]
+    return f"SELECT {', '.join(parts) or '*'} FROM {source}"

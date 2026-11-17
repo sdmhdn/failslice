@@ -1,7 +1,10 @@
 """Conservative predicate SQL validation; DuckDB's external-access lock is still required."""
 
+import functools
+import re
 from collections.abc import Collection
 
+import duckdb
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
@@ -68,6 +71,10 @@ _VOLATILE_FUNCTIONS = frozenset(
         "gen_random_uuid",
         "get_current_time",
         "get_current_timestamp",
+        "current_localtime",
+        "current_localtimestamp",
+        "current_query_id",
+        "current_transaction_id",
         "localtime",
         "localtimestamp",
         "nextval",
@@ -82,6 +89,43 @@ _VOLATILE_FUNCTIONS = frozenset(
         "uuidv7",
     }
 )
+
+
+# Deterministic despite DuckDB's VOLATILE label (it always raises the same message).
+_NOT_VOLATILE = frozenset({"error"})
+
+
+@functools.cache
+def volatile_functions() -> frozenset[str]:
+    """Names of functions whose result can change between evaluations.
+
+    The hand-written list above is the floor. DuckDB's own catalog adds every function
+    labelled VOLATILE or CONSISTENT_WITHIN_QUERY, and every built-in macro whose body
+    calls one of those (e.g. ``pg_conf_load_time()`` expands to ``current_timestamp``).
+    Computed once per process from a fresh in-memory connection.
+    """
+    names = set(_VOLATILE_FUNCTIONS)
+    con = duckdb.connect(":memory:")
+    try:
+        rows = con.execute(
+            "SELECT function_name, stability, macro_definition FROM duckdb_functions()"
+        ).fetchall()
+    finally:
+        con.close()
+    for name, stability, _ in rows:
+        if stability in {"VOLATILE", "CONSISTENT_WITHIN_QUERY"}:
+            names.add(str(name).lower())
+    names -= _NOT_VOLATILE
+    macros = [(str(n).lower(), str(body).lower()) for n, _, body in rows if body]
+    changed = True
+    while changed:  # macros calling macros: iterate to a fixed point
+        changed = False
+        pattern = re.compile(r"\b(" + "|".join(map(re.escape, sorted(names))) + r")\b")
+        for name, body in macros:
+            if name not in names and pattern.search(body):
+                names.add(name)
+                changed = True
+    return frozenset(names)
 
 
 class PredicateValidationError(ValueError):
@@ -139,7 +183,7 @@ def _validate_function(node: exp.Func) -> None:
             "forbidden_function",
             f"File/system function is not allowed: {node.sql(dialect='duckdb')}",
         )
-    if name in _VOLATILE_FUNCTIONS:
+    if name in volatile_functions():
         raise PredicateValidationError(
             "volatile_function", f"Volatile function is not allowed: {node.sql(dialect='duckdb')}"
         )

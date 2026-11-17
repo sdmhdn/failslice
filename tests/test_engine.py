@@ -13,6 +13,7 @@ from hypothesis import strategies as st
 from failslice.config import ConfigError, Project
 from failslice.engine import Candidate, Engine, q
 from failslice.predicate import OutcomeKind
+from failslice.runspec import RunSpec
 from tests.conftest import FANOUT_FKS, FANOUT_PREDICATE, fanout_tables, make_project
 from tests.reference import Schema, greatest_intact, kept_sets, schemas
 
@@ -254,7 +255,10 @@ def test_export_writes_replay_files(
         spec = e.export(out)
     finally:
         e.close()
-    assert set(spec["tables"]) == {"customers", "orders", "lines"}
+    assert set(spec.tables) == {"customers", "orders", "lines"}
+    assert spec.tables["orders"].rows == 2 and not spec.warnings
+    assert spec.inputs["table:orders"].rows == 121
+    assert RunSpec.read(out) == spec
     assert json.loads((out / "spec.json").read_text())["foreign_keys"] == list(FANOUT_FKS)
     con = duckdb.connect()
     rowmap = con.execute(

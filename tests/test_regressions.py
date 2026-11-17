@@ -142,8 +142,8 @@ def test_verify_rejects_expectation_outside_run_dir(
     spec = json.loads((out / "spec.json").read_text())
     spec["expected_file"] = "../outside.parquet"
     (out / "spec.json").write_text(json.dumps(spec))
-    with pytest.raises(ValueError, match="outside the run directory"):
-        verify_run_dir(out)
+    report = verify_run_dir(out)
+    assert report.status == "replay-failed" and "outside the run directory" in report.detail
 
 
 # Finding 9: supervised evaluation counts exclude cache hits and match the child.

@@ -26,6 +26,7 @@ __all__ = [
     "Settings",
     "SqlPredicate",
     "TableSpec",
+    "literal_path",
     "load_project",
     "parse_project",
 ]
@@ -91,6 +92,12 @@ class ExpectPredicate(_Model):
     mode: Literal["differs", "equals"] = "differs"
     ordered: bool = False
     float_tolerance: Annotated[float, Field(ge=0)] | None = None
+
+    @property
+    def inline(self) -> bool:
+        """Whether the expectation is inline (``expected``, which may be NULL) rather
+        than read from ``expected_file``."""
+        return self.expected_file is None
 
 
 class RaisesPredicate(_Model):
@@ -229,9 +236,28 @@ class Project:
         )
 
 
+_GLOB_CHARS = frozenset("*?[]{}")
+
+
+def literal_path(path: Path) -> Path:
+    """Return ``path`` unchanged if DuckDB's file readers will open exactly that file.
+
+    DuckDB's readers expand glob patterns, so a path containing ``* ? [ ] { }`` (in any
+    component) could read other files than the one that was checked and hashed.
+    Such paths are rejected.
+    """
+    text = str(path)
+    if any(ch in _GLOB_CHARS for ch in text):
+        raise ConfigError(
+            f"path {text!r} contains a glob character (one of * ? [ ] {{ }}); DuckDB would "
+            "expand it, so it is not accepted. Rename the file or directory."
+        )
+    return path
+
+
 def resolve_inside(base: Path, path: str | Path, root: Path) -> Path:
-    """Resolve ``path`` against ``base`` (following symlinks) and require it to be
-    inside ``root``."""
+    """Resolve ``path`` against ``base`` (following symlinks), require it to be inside
+    ``root`` and free of glob characters (see :func:`literal_path`)."""
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = base / candidate
@@ -239,7 +265,7 @@ def resolve_inside(base: Path, path: str | Path, root: Path) -> Path:
     root_resolved = root.resolve()
     if not resolved.is_relative_to(root_resolved):
         raise ConfigError(f"path {str(path)!r} resolves outside the allowed root {root_resolved}")
-    return resolved
+    return literal_path(resolved)
 
 
 def _format_validation(exc: ValidationError) -> str:
@@ -265,7 +291,9 @@ def _parse_predicate(raw: Mapping[str, Any]) -> PredicateSpec:
             raise ConfigError(f"predicate.{key} must be a mapping")
         if key == "expect":
             spec = ExpectPredicate.model_validate(dict(value))
-            if (spec.expected is None) == (spec.expected_file is None):
+            # Presence, not value: ``expected: null`` is a valid scalar (NULL) expectation.
+            given = {"expected", "expected_file"} & spec.model_fields_set
+            if len(given) != 1 or (given == {"expected_file"} and spec.expected_file is None):
                 raise ConfigError("predicate.expect needs exactly one of: expected, expected_file")
             return spec
         return RaisesPredicate.model_validate(dict(value))

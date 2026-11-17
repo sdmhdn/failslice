@@ -35,9 +35,11 @@ from failslice.config import (
     ExpectPredicate,
     ForeignKey,
     Project,
+    literal_path,
     resolve_inside,
 )
 from failslice.predicate import Outcome, OutcomeKind, PredicateRunner, Row
+from failslice.runspec import InputFile, ReplaySettings, RunSpec, TableEntry, restoring_select
 
 __all__ = ["AttemptResult", "Candidate", "Engine", "TableInfo", "q"]
 
@@ -60,6 +62,13 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _require_unchanged(path: Path, sha_before: str) -> None:
+    """The file must have the same bytes after DuckDB read it as before, so the
+    recorded hash describes exactly the loaded rows."""
+    if file_sha256(path) != sha_before:
+        raise ConfigError(f"input file {path} changed while it was being loaded")
 
 
 @dataclass(frozen=True)
@@ -134,6 +143,7 @@ class Engine:
             self.con.close()
             raise
         self.runner = PredicateRunner(project.predicate, self.expected_rows)
+        self._cache_namespace = self._compute_cache_namespace()
         self.reset_state()
 
     # ------------------------------------------------------------------ loading
@@ -149,6 +159,7 @@ class Engine:
             if not path.is_file():
                 raise ConfigError(f"table {name!r}: file not found: {path}")
             fmt = spec.resolved_format()
+            sha_before = file_sha256(path)
             stage = f"__fs_state.{q('stage_' + name)}"
             if fmt == "csv":
                 con.execute(f"CREATE TABLE {stage} AS SELECT * FROM read_csv({_lit(str(path))})")
@@ -186,7 +197,8 @@ class Engine:
             )
             con.execute(f"DROP TABLE {stage}")
             (count,) = self._one(f"SELECT count(*) FROM __fs_base.{q(name)}")
-            self.tables[name] = TableInfo(name, columns, int(count), str(path), file_sha256(path))
+            _require_unchanged(path, sha_before)
+            self.tables[name] = TableInfo(name, columns, int(count), str(path), sha_before)
         for fk in self.project.foreign_keys:
             for table, col in ((fk.child, fk.child_column), (fk.parent, fk.parent_column)):
                 if col not in {c for c, _ in self.tables[table].columns}:
@@ -232,6 +244,7 @@ class Engine:
         self.con.execute(
             f"CREATE TABLE __fs_meta.expected AS SELECT * FROM {reader}({_lit(str(path))})"
         )
+        _require_unchanged(path, self.expected_sha256)
         return [tuple(r) for r in self.con.execute("SELECT * FROM __fs_meta.expected").fetchall()]
 
     def _compute_orphans(self) -> None:
@@ -390,7 +403,9 @@ class Engine:
         with contextlib.suppress(duckdb.Error):  # aborted transaction; caller rolls back
             self.con.execute("SET search_path = 'main'")
 
-    def _cache_key(self, fps: Mapping[str, Fingerprint]) -> str:
+    def _compute_cache_namespace(self) -> str:
+        """Hash of everything except the configuration that determines an outcome
+        (fixed for the engine's lifetime, so computed once)."""
         payload = {
             "fp_version": FINGERPRINT_VERSION,
             "fs": __version__,
@@ -402,9 +417,12 @@ class Engine:
             "expected": repr(self.expected_rows),
             "threads": self.project.settings.threads,
             "seed": self.project.settings.seed,
-            "config": {n: list(fps[n]) for n in sorted(fps)},
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+    def _cache_key(self, fps: Mapping[str, Fingerprint]) -> str:
+        config = json.dumps({n: list(fps[n]) for n in sorted(fps)})
+        return hashlib.sha256(f"{self._cache_namespace}:{config}".encode()).hexdigest()
 
     def attempt(
         self,
@@ -523,25 +541,52 @@ class Engine:
         return changed
 
     # ------------------------------------------------------------------ export
-    def export(self, out_dir: Path) -> dict[str, Any]:
+    def export(self, out_dir: Path) -> RunSpec:
         """Write the current configuration: ``tables/<t>.parquet``, ``rowmap.parquet``,
-        ``orphans.parquet`` and ``spec.json`` (everything replay needs).
+        ``orphans.parquet``, the expectation snapshot and ``spec.json`` (a
+        :class:`~failslice.runspec.RunSpec`; everything replay needs).
 
-        ``out_dir`` must be inside one of the engine's allowed directories.
+        ``out_dir`` must be inside one of the engine's allowed directories. Each table
+        file is read back and compared with the kept rows (after restoring source types);
+        a difference is recorded in ``RunSpec.warnings``.
         """
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "tables").mkdir(exist_ok=True)
         con = self.con
-        table_files: dict[str, str] = {}
+        entries: dict[str, TableEntry] = {}
+        warnings: list[str] = []
         for name, info in self.tables.items():
             cols = ", ".join(f"b.{q(c)}" for c, _ in info.columns)
-            target = out_dir / "tables" / f"{name}.parquet"
-            con.execute(
-                f"COPY (SELECT {cols} FROM __fs_base.{q(name)} b SEMI JOIN {self._cur(name)} k "
-                f"ON b.__fs_rid = k.rid ORDER BY b.__fs_rid) TO {_lit(str(target))} "
-                "(FORMAT parquet)"
+            kept = (
+                f"SELECT {cols} FROM __fs_base.{q(name)} b SEMI JOIN {self._cur(name)} k "
+                f"ON b.__fs_rid = k.rid"
             )
-            table_files[name] = f"tables/{name}.parquet"
+            rel = f"tables/{name}.parquet"
+            target = literal_path(out_dir / rel)
+            con.execute(
+                f"COPY ({kept} ORDER BY b.__fs_rid) TO {_lit(str(target))} (FORMAT parquet)"
+            )
+            reader = f"read_parquet({_lit(str(target))})"
+            exported = tuple(
+                (str(r[0]), str(r[1]))
+                for r in con.execute(f"DESCRIBE SELECT * FROM {reader}").fetchall()
+            )
+            restored = restoring_select(reader, exported, info.columns)
+            (diff,) = self._one(
+                f"SELECT (SELECT count(*) FROM (({kept}) EXCEPT ALL ({restored}))) + "
+                f"(SELECT count(*) FROM (({restored}) EXCEPT ALL ({kept})))"
+            )
+            if diff:
+                warnings.append(
+                    f"table {name!r}: {diff} rows differ after the Parquet round trip "
+                    f"(types {list(info.columns)} exported as {list(exported)})"
+                )
+            entries[name] = TableEntry(
+                file=rel,
+                rows=self._sizes[name],
+                columns=exported,
+                source_columns=info.columns,
+            )
         rowmap_parts = [
             f"SELECT {_lit(name)} AS table_name, "
             f"(row_number() OVER (ORDER BY rid) - 1)::BIGINT AS row_index, rid AS source_rid "
@@ -550,7 +595,7 @@ class Engine:
         ]
         con.execute(
             f"COPY ({' UNION ALL '.join(rowmap_parts)} ORDER BY table_name, row_index) "
-            f"TO {_lit(str(out_dir / 'rowmap.parquet'))} (FORMAT parquet)"
+            f"TO {_lit(str(literal_path(out_dir / 'rowmap.parquet')))} (FORMAT parquet)"
         )
         orphan_parts = []
         for i, fk in enumerate(self.project.foreign_keys):
@@ -568,39 +613,46 @@ class Engine:
             "0::BIGINT AS source_rid WHERE false"
         )
         con.execute(
-            f"COPY ({orphan_sql}) TO {_lit(str(out_dir / 'orphans.parquet'))} (FORMAT parquet)"
+            f"COPY ({orphan_sql}) TO {_lit(str(literal_path(out_dir / 'orphans.parquet')))} "
+            "(FORMAT parquet)"
         )
         expected_file = None
         if self.expected_file is not None:
             (out_dir / "expected").mkdir(exist_ok=True)
-            dest = out_dir / "expected" / "expected.parquet"
+            dest = literal_path(out_dir / "expected" / "expected.parquet")
             con.execute(
                 f"COPY (SELECT * FROM __fs_meta.expected) TO {_lit(str(dest))} (FORMAT parquet)"
             )
             expected_file = "expected/expected.parquet"
-        spec = {
-            "format": 1,
-            "failslice_version": __version__,
-            "duckdb_version": duckdb.__version__,
-            "tables": {
-                n: {"file": table_files[n], "columns": [list(c) for c in t.columns]}
-                for n, t in self.tables.items()
-            },
-            "foreign_keys": [str(fk) for fk in self.project.foreign_keys],
-            "predicate": self.project.predicate.model_dump(mode="json"),
-            "expected_file": expected_file,
-            "expected_yaml": (
-                yaml.safe_dump(self.project.predicate.expected)
-                if isinstance(self.project.predicate, ExpectPredicate)
-                and self.project.predicate.expected is not None
+        predicate = self.project.predicate
+        inputs = {
+            f"table:{n}": InputFile(path=t.source, sha256=t.source_sha256, rows=t.row_count)
+            for n, t in self.tables.items()
+        }
+        if self.expected_file is not None and self.expected_sha256 is not None:
+            inputs["expected"] = InputFile(
+                path=str(self.expected_file), sha256=self.expected_sha256
+            )
+        spec = RunSpec(
+            failslice_version=__version__,
+            duckdb_version=duckdb.__version__,
+            tables=entries,
+            foreign_keys=tuple(str(fk) for fk in self.project.foreign_keys),
+            predicate=predicate,
+            expected_file=expected_file,
+            expected_yaml=(
+                yaml.safe_dump(predicate.expected)
+                if isinstance(predicate, ExpectPredicate) and predicate.inline
                 else None
             ),
-            "settings": {
-                "threads": self.project.settings.threads,
-                "eval_timeout_s": self.project.settings.eval_timeout_s,
-            },
-        }
-        (out_dir / "spec.json").write_text(json.dumps(spec, indent=2, default=str) + "\n")
+            inputs=inputs,
+            settings=ReplaySettings(
+                threads=self.project.settings.threads,
+                eval_timeout_s=self.project.settings.eval_timeout_s,
+            ),
+            warnings=tuple(warnings),
+        )
+        spec.write(out_dir)
         return spec
 
     def close(self) -> None:

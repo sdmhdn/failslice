@@ -6,6 +6,7 @@ configuration the reducer ends on was evaluated TRUE.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -109,6 +110,10 @@ class ReductionStats:
     confirmed: bool = False
     """Whether the final configuration was observed TRUE (determinism check or an
     accepted candidate). False only if a budget stopped the run before that."""
+    evaluations_started: int | None = None
+    """Predicate executions started, as counted by the supervisor (isolated runs only).
+    Can exceed ``evaluations`` when the reduction process was stopped mid-evaluation or
+    after its last checkpoint."""
 
     @property
     def input_rows(self) -> int:
@@ -159,6 +164,20 @@ class Reducer:
         self.stats = ReductionStats(sizes_before=engine.sizes)
         self._input_rows = engine.total
         self._phase: Literal["determinism", "reduce", "certify"] = "determinism"
+
+    def snapshot(self) -> ReductionStats:
+        """A copy of the statistics as of now (for checkpoints)."""
+        stats = dataclasses.replace(
+            self.stats,
+            outcomes=Counter(self.stats.outcomes),
+            error_classes=Counter(self.stats.error_classes),
+            determinism_signatures=list(self.stats.determinism_signatures),
+            sizes_before=dict(self.stats.sizes_before),
+        )
+        stats.sizes_after = self.engine.sizes
+        stats.cache_hits = self.engine.cache_hits
+        stats.elapsed_s = self._elapsed()
+        return stats
 
     # ------------------------------------------------------------------ budget
     def _elapsed(self) -> float:

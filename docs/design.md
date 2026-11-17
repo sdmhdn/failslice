@@ -2,8 +2,10 @@
 
 Status: agreed design after Phase 1 (Claude draft + independent Codex design + two debate
 rounds; history in the git-ignored `.handoff/phase1-*`). Decisions are recorded as ADRs in
-[`docs/decisions/`](decisions/). This document describes what v1 *will* do; nothing here is
-implemented yet.
+[`docs/decisions/`](decisions/). The core engine (config, loading, predicate outcomes,
+cascade ddmin, cache, budgets, supervisor, replay; §3-§11, §13) is implemented as of
+Phase 2 and was revised after an independent audit. Artifacts beyond the run directory,
+the CLI and the MCP server (§12 manifest/report/pytest, §14) are still planned.
 
 ## 1. Problem statement
 
@@ -33,23 +35,22 @@ flowchart LR
     MCP[MCP server failslice-mcp] --> SUP
 ```
 
-Package layout (`src/failslice/`):
+Package layout (`src/failslice/`; the first block exists, the second is planned):
 
 | Module | Responsibility |
 |---|---|
-| `config.py` | YAML schema (pydantic models), path checks against the allowed root, FK graph + cycle detection |
-| `loader.py` | Load files into DuckDB schema `__fs_base`, assign `__fs_rid`, record resolved schema and input hashes |
-| `predicate.py` | Predicate forms, sqlglot validation, execution, outcome classification, result/error signatures |
-| `evaluator.py` | `Evaluator` protocol; in-process DuckDB evaluator (views over kept-id tables, cascade repair, cache, timeout watchdog) |
+| `config.py` | YAML schema (pydantic models), path checks against the allowed root (incl. glob characters), FK graph + cycle detection |
+| `engine.py` | Load files into DuckDB schema `__fs_base`, assign `__fs_rid`, input hashes; views over kept-id tables, cascade repair, negative cache; export of the run directory |
+| `predicate.py` | Predicate execution, timeout watchdog, outcome classification, result/error signatures, typed result comparison |
+| `safety.py` | sqlglot validation of predicate SQL (ADR 0007) |
 | `reducer.py` | Cascade ddmin sweeps, fixed point, certification pass, budgets, progress events |
-| `supervisor.py` | Child-process runner, checkpoints, hard deadlines, evaluation-budget accounting |
-| `export.py`, `manifest.py`, `report.py` | Artifacts |
+| `supervisor.py` | Child-process runner, checkpoints, hard deadlines, evaluation accounting, recovery |
+| `runspec.py` | The run-directory contract `spec.json` (ADR 0008) |
 | `verify.py` | Independent replay (`python -m failslice.verify` in a fresh process) |
-| `pytest_export.py`, `explain.py` | Test generation, surviving-row explanation |
-| `inference.py` | PK/FK *suggestions* for `init` / `suggest_relationships` |
-| `cli.py` | Typer app (`failslice`) |
-| `mcp_server.py` | MCP server (`failslice-mcp`) |
 | `api.py` / `__init__.py` | Small public API |
+| *planned:* `manifest.py`, `report.py`, `pytest_export.py`, `explain.py` | Artifacts, test generation, surviving-row explanation (Phase 3) |
+| *planned:* `inference.py` | PK/FK *suggestions* for `init` / `suggest_relationships` |
+| *planned:* `cli.py`, `mcp_server.py` | Typer app (`failslice`), MCP server (`failslice-mcp`) |
 
 Public API (implemented in Phase 2; `export_pytest` and `explain` follow in Phase 3):
 
@@ -58,7 +59,9 @@ project = failslice.load_project("failslice.yaml")
 project = project.with_settings(seed=1, max_evals=2000)  # budgets and seed live in settings
 report = failslice.check(project)  # CheckReport: tables, FK orphans, determinism
 result = failslice.reduce(project, isolate=True, on_progress=print)  # ReductionResult
-result.minimality_label  # "1-minimal (verified)" or "reduced, minimality not verified"
+result.minimality_label  # "1-minimal (verified)", "reduced, minimality not verified"
+# or "no reproducer" (status "no-candidate")
+result.spec  # RunSpec: the exported reproducer's contract (spec.json)
 vrep = failslice.verify(result.run_dir)  # VerificationReport (fresh process)
 ```
 
@@ -175,7 +178,14 @@ unqualified name. Three forms:
 - The result is fully fetched before classification (errors can surface during fetch).
 - Expectation comparison: exact typed bag equality (duplicates count, NULL = NULL, columns
   by position, row order ignored unless `ordered: true`); optional absolute
-  `float_tolerance`. A scalar expectation requires a 1×1 result.
+  `float_tolerance`. A scalar expectation requires a 1×1 result (`expected: null` is a
+  valid scalar). Numbers compare exactly as rationals (integers and decimals are never
+  rounded through binary floats; a float is taken at its shortest decimal form, so `0.1`
+  equals `DECIMAL '0.1'`; NaN equals NaN; infinities equal only themselves). Booleans
+  never equal numbers, at any depth; lists and structs compare element by element with
+  the same rules. Unordered tolerant comparison uses a bipartite matching (iterative, so
+  large results cannot exhaust the stack). A comparison that fails with an exception is
+  an ERROR outcome (`error_class: comparison`), never TRUE.
 - **TIMEOUT** overrides all forms. Only TRUE counts as "still failing". ERROR outcomes
   are counted per error class so slippage (a different failure) is visible in the report.
 - Caveat for `mode: differs`: the reducer looks for *any* configuration whose result
@@ -192,7 +202,11 @@ Both paths expose exactly the original columns, so `SELECT *` and `NATURAL JOIN`
 same.
 All four must be TRUE with identical signatures; otherwise refuse
 (`--allow-nondeterministic` downgrades to a loud warning and disables the 1-minimal claim).
-Volatile functions (`random()`, `now()`, `uuid()`, ...) in the predicate are rejected.
+Volatile functions (`random()`, `now()`, `uuid()`, ...) in the predicate are rejected: a
+hand-written list, plus every function DuckDB's own catalog labels `VOLATILE` or
+`CONSISTENT_WITHIN_QUERY` (e.g. `current_schema()`, which would differ between the plain
+and the reduction views), plus built-in macros that call one of them
+(`pg_conf_load_time()` -> `current_timestamp`). `error()` stays allowed.
 Two matching runs are a screen, not proof; the independent replay is the real check.
 
 ## 8. Evaluator and materialization (ADR 0005)
@@ -231,34 +245,54 @@ Two matching runs are a screen, not proof; the independent replay is the real ch
 
 - Budgets: `max_evals` (predicate executions; cache hits are free), `wall_clock_s`,
   `eval_timeout_s`. The wall-clock budget covers the whole run including export and replay:
-  the reduction gets `wall_clock_s` minus a reserve, and replay gets whatever time remains
-  (none left ⇒ "unverified"). In isolated runs the total is bounded by `wall_clock_s` plus
-  fixed grace periods (kill, recovery).
+  the reduction gets `wall_clock_s` minus a reserve (10%, at least 10 s, at most half the
+  budget), and replay gets whatever time remains (none left ⇒ "unverified"). In isolated
+  runs the total is bounded by `wall_clock_s` plus fixed grace periods (kill, recovery).
 - Per-evaluation timeout is **cooperative**: a watchdog calls `con.interrupt()`; DuckDB stops
   at its next interruption check. The watchdog is joined before the connection is reused.
+  If the watchdog fired, the outcome is TIMEOUT even if the query completed just before
+  the interrupt landed (a TIMEOUT is never accepted, so this errs on the safe side).
+  In-process, the timeout covers SQL execution only; classifying the result (e.g. the
+  user's `raises.match` regex, or a large tolerant comparison) is bounded only in an
+  isolated run, where the supervisor kills an evaluation that overruns
+  `eval_timeout_s + grace`. `check()` currently runs in-process; the CLI and MCP server
+  (Phases 3-4) will run checks under the supervisor too.
 - **Run supervisor:** CLI and MCP (and `reduce(isolate=True)`) run the reduction in a child
   process. The child announces every predicate execution over a pipe with a synchronous
   send *before* it starts (so the parent's count stays exact even if the child dies); the
   parent closes its write end of the pipe, so a child dying mid-message yields EOF, never a
-  blocked read. The parent kills the child when the deadline passes or one evaluation runs
-  past `eval_timeout_s + grace`.
+  blocked read. Messages are received on a reader thread, so a child that stalls in the
+  middle of a message cannot block the deadline loop. The parent kills the child when the
+  deadline passes or one evaluation runs past `eval_timeout_s + grace`. User progress
+  callbacks run on their own thread and receive only the latest event (events are
+  cumulative), so a slow callback can neither delay a kill nor grow memory.
 - **Checkpoints:** written atomically (temp + rename) after the full data passes `check`
   (initial checkpoint) and after every acceptance: kept ids per table, run id, input
-  identity (hashes of all table files and of the expectation file). If the child is killed,
+  identity (hashes of all table files and of the expectation file, each hashed before
+  and after loading; a file that changes while it is loaded is refused) and the
+  statistics as of that configuration (so a recovered run reports matching numbers; the
+  supervisor's count of *started* evaluations is reported separately). If the child is killed,
   a separate, equally supervised recovery process reloads the original files (hashes must
   match, same row ids), exports the checkpoint, and the parent replays it under the
   remaining deadline.
   Killed before the initial checkpoint ⇒ "no confirmed candidate". If replay cannot finish
   in time ⇒ "unverified candidate".
 - The library default is in-process (`isolate=False`) with cooperative timeouts, as documented.
+- A run that stops before any configuration is confirmed TRUE has status `no-candidate`
+  but still returns its statistics.
 
 ## 11. Verification
 
 `failslice verify` / the final step of `reduce` starts a fresh Python process that builds a
-new DuckDB only from the exported Parquet files with the recorded schema, disables external
-access, runs the predicate (uncached) and checks integrity: every non-NULL FK value has a
-kept parent, except rows with a recorded `(edge, original row id)` orphan exemption (from
-`orphans.parquet`; every other dangling reference is an integrity failure). The result statuses are:
+new DuckDB only from the files `spec.json` names (each must resolve, after symlinks,
+inside the run directory and contain no glob characters), disables external access,
+casts columns whose Parquet type differs from the source type back to it (e.g. `ENUM`,
+which Parquet stores as `VARCHAR`), checks the schema, runs the predicate (uncached) and
+checks integrity: every non-NULL FK value has a kept parent, except rows with a recorded
+`(edge, output row index)` orphan exemption (from `orphans.parquet`; malformed exemptions
+— NULL, unknown edge, row out of range, duplicates — fail the check, and every other
+dangling reference is an integrity failure). The export reads each table back and compares it with the kept
+rows; a lossy round trip is recorded in `spec.json` `warnings` and reported. The result statuses are:
 
 - `verified`: predicate TRUE in replay and integrity holds;
 - `replay-failed`: predicate not TRUE in replay (reported with outcome and signature —
@@ -270,7 +304,12 @@ kept parent, except rows with a recorded `(edge, original row id)` orphan exempt
 
 Run directory `.failslice/runs/<run-id>/`:
 
-- `tables/<t>.parquet` (source of truth) and `csv/<t>.csv` (convenience)
+- `spec.json` (implemented): the typed, versioned contract of the run directory
+  (`RunSpec`, format 2, ADR 0008): tables with exported and source schemas, FKs,
+  predicate, expectation, input provenance (path, sha256, rows), replay settings,
+  warnings. Replay and every later artifact read only this.
+- `result.json` (implemented): status, minimality, statistics, verification.
+- `tables/<t>.parquet` (source of truth) and `csv/<t>.csv` (convenience, planned)
 - `rowmap.parquet`: table, output row index, original `__fs_rid`
 - `orphans.parquet`: the input-orphan exemptions that survive in the output, as
   `(fk edge, child table, output row index, original __fs_rid)`; replay needs only this file
@@ -292,7 +331,9 @@ Run directory `.failslice/runs/<run-id>/`:
 Threat: a predicate or config (possibly written by an AI agent through MCP) that reads or
 writes files, escapes the allowed root, or mutates state.
 
-- Paths: resolved (incl. symlinks) and required to be inside the allowed root.
+- Paths: resolved (incl. symlinks) and required to be inside the allowed root. Paths with
+  glob characters (`* ? [ ] { }`) are refused, because DuckDB's readers would expand them
+  to files other than the one that was checked and hashed.
 - Predicates: parsed with sqlglot (DuckDB dialect) to exactly one `SELECT` / `WITH ... SELECT`;
   rejected: DDL/DML, `COPY`, `ATTACH`, `INSTALL`/`LOAD`, `PRAGMA`, `SET`, `CALL`, table
   functions (`read_csv`, `read_parquet`, `glob`, ...), schema-qualified references,

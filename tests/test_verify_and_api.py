@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -361,5 +361,20 @@ def test_raises_predicate_end_to_end(
     assert res.minimality_label == "1-minimal (verified)"
 
 
-def test_python_module_entry_exists() -> None:
-    assert shutil.which(sys.executable)
+def test_python_module_entry_runs(project_factory: Callable[..., Project], tmp_path: Path) -> None:
+    # The real ``python -m failslice.verify`` entry point, in a separate process.
+    p = _fanout(project_factory)
+    out = tmp_path / "run"
+    _export(p, out, {"customers": [7], "orders": [7, 120], "lines": [7]})
+    ok = subprocess.run(
+        [sys.executable, "-m", "failslice.verify", str(out)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert ok.returncode == 0, ok.stderr
+    assert json.loads(ok.stdout)["status"] == "verified"
+    usage = subprocess.run(
+        [sys.executable, "-m", "failslice.verify"], capture_output=True, text=True, check=False
+    )
+    assert usage.returncode == 2 and "usage" in usage.stderr

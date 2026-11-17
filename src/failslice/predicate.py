@@ -7,6 +7,8 @@ unexpected / different error) and TIMEOUT. Only TRUE counts as "still failing".
 from __future__ import annotations
 
 import decimal
+import fractions
+import functools
 import hashlib
 import math
 import threading
@@ -120,26 +122,70 @@ def normalize_expected(value: Any) -> list[Row]:
 
 _NUMERIC = (int, float, decimal.Decimal)
 
+# A numeric value as compared: an exact fraction, or a special float value.
+_Num = fractions.Fraction | float
 
-def _values_equal(a: Any, b: Any, tol: float | None) -> bool:
+
+@functools.lru_cache(maxsize=1 << 16, typed=True)
+def _num(value: int | float | decimal.Decimal) -> _Num:
+    """Exact value of a number. Floats are taken at their shortest decimal form
+    (``repr``), so ``0.1`` equals ``DECIMAL '0.1'``; NaN and infinities stay floats."""
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return value
+        return fractions.Fraction(repr(value))
+    if isinstance(value, decimal.Decimal):
+        if value.is_nan():
+            return math.nan
+        if value.is_infinite():
+            return math.inf if value > 0 else -math.inf
+    return fractions.Fraction(value)
+
+
+def _numbers_equal(a: _Num, b: _Num, tol: fractions.Fraction | None) -> bool:
+    if isinstance(a, float) or isinstance(b, float):  # NaN or an infinity involved
+        if isinstance(a, float) and isinstance(b, float) and math.isnan(a) and math.isnan(b):
+            return True
+        return a == b  # equal infinities; NaN never equals anything else
+    if tol is None:
+        return a == b
+    return abs(a - b) <= tol
+
+
+def _values_equal(a: Any, b: Any, tol: fractions.Fraction | None) -> bool:
+    """Typed equality: NULL only equals NULL, booleans only equal booleans, numbers
+    compare exactly (or within ``tol``), lists and structs compare element-wise."""
     if a is None or b is None:
         return a is None and b is None
     if isinstance(a, bool) or isinstance(b, bool):
         return isinstance(a, bool) and isinstance(b, bool) and a == b
     if isinstance(a, _NUMERIC) and isinstance(b, _NUMERIC):
-        fa, fb = float(a), float(b)
-        if math.isnan(fa) or math.isnan(fb):
-            return math.isnan(fa) and math.isnan(fb)
-        if tol is not None:
-            return abs(fa - fb) <= tol
-        return decimal.Decimal(str(a)) == decimal.Decimal(str(b))
+        return _numbers_equal(_num(a), _num(b), tol)
+    if isinstance(a, (list, tuple)) or isinstance(b, (list, tuple)):
+        return (
+            isinstance(a, (list, tuple))
+            and isinstance(b, (list, tuple))
+            and len(a) == len(b)
+            and all(_values_equal(x, y, tol) for x, y in zip(a, b, strict=True))
+        )
+    if isinstance(a, dict) or isinstance(b, dict):
+        return (
+            isinstance(a, dict)
+            and isinstance(b, dict)
+            and list(a) == list(b)
+            and all(_values_equal(a[k], b[k], tol) for k in a)
+        )
     if type(a) is not type(b) and not (isinstance(a, str) and isinstance(b, str)):
         return False
     return bool(a == b)
 
 
-def _rows_equal(a: Row, b: Row, tol: float | None) -> bool:
+def _rows_equal(a: Row, b: Row, tol: fractions.Fraction | None) -> bool:
     return len(a) == len(b) and all(_values_equal(x, y, tol) for x, y in zip(a, b, strict=True))
+
+
+def _tolerance(tol: float | None) -> fractions.Fraction | None:
+    return None if tol is None else fractions.Fraction(repr(float(tol)))
 
 
 def results_equal(
@@ -148,51 +194,91 @@ def results_equal(
     """Typed bag (or list) equality: duplicates count, NULL equals NULL."""
     if len(actual) != len(expected):
         return False
+    t = _tolerance(tol)
     if ordered:
-        return all(_rows_equal(a, e, tol) for a, e in zip(actual, expected, strict=True))
-    if tol is None:
-        try:
-            return Counter(_canonical_key(r) for r in actual) == Counter(
-                _canonical_key(r) for r in expected
-            )
-        except TypeError:  # pragma: no cover - unhashable values fall back to matching
-            pass
-    return _perfect_matching(actual, expected, tol)
+        return all(_rows_equal(a, e, t) for a, e in zip(actual, expected, strict=True))
+    try:
+        # Exactly equal bags are equal under any tolerance. (Only the *whole* bags may be
+        # cancelled: removing common rows first can break a tolerant perfect matching.)
+        if Counter(_row_key(r) for r in actual) == Counter(_row_key(r) for r in expected):
+            return True
+        if t is None:
+            return False
+    except TypeError:  # pragma: no cover - unhashable values fall back to matching
+        pass
+    return _perfect_matching(actual, expected, t)
 
 
-def _perfect_matching(actual: Sequence[Row], expected: Sequence[Row], tol: float | None) -> bool:
+def _perfect_matching(
+    actual: Sequence[Row], expected: Sequence[Row], tol: fractions.Fraction | None
+) -> bool:
     """Whether every actual row can be paired with a distinct, equal expected row
-    (bipartite matching, Kuhn's algorithm). Order-independent, unlike greedy matching."""
-    match_of_expected: list[int | None] = [None] * len(expected)
+    (bipartite matching with augmenting paths, iterative so large results cannot
+    exhaust the Python stack). Order-independent, unlike greedy matching."""
     edges = [[j for j, e in enumerate(expected) if _rows_equal(a, e, tol)] for a in actual]
-
-    def augment(i: int, seen: set[int]) -> bool:
-        for j in edges[i]:
-            if j in seen:
-                continue
-            seen.add(j)
-            current = match_of_expected[j]
-            if current is None or augment(current, seen):
-                match_of_expected[j] = i
-                return True
-        return False
-
-    return all(augment(i, set()) for i in range(len(actual)))
-
-
-def _canonical_key(row: Row) -> tuple[Any, ...]:
-    out: list[Any] = []
-    for v in row:
-        if isinstance(v, bool):
-            out.append(("bool", v))
-        elif isinstance(v, _NUMERIC):
-            f = float(v)
-            out.append(("num", "nan") if math.isnan(f) else ("num", decimal.Decimal(str(v))))
-        elif v is None:
-            out.append(("null",))
+    if any(not e for e in edges) or len({j for e in edges for j in e}) < len(expected):
+        return False  # some row has no partner at all
+    match_of_expected: list[int] = [-1] * len(expected)
+    unmatched: list[int] = []
+    for i, candidates in enumerate(edges):  # greedy start: most rows match directly
+        free = next((j for j in candidates if match_of_expected[j] == -1), None)
+        if free is None:
+            unmatched.append(i)
         else:
-            out.append((type(v).__name__, v))
-    return tuple(out)
+            match_of_expected[free] = i
+    for root in unmatched:
+        seen = [False] * len(expected)
+        stack = [root]  # actual rows on the current alternating path
+        next_edge = [0]  # per stack frame: index of the next edge to try
+        via: list[int] = [-1]  # per stack frame: expected row being tried
+        augmented = False
+        while stack and not augmented:
+            depth = len(stack) - 1
+            i = stack[depth]
+            if next_edge[depth] == len(edges[i]):
+                stack.pop()
+                next_edge.pop()
+                via.pop()
+                continue
+            j = edges[i][next_edge[depth]]
+            next_edge[depth] += 1
+            if seen[j]:
+                continue
+            seen[j] = True
+            via[depth] = j
+            if match_of_expected[j] == -1:
+                for d, row in enumerate(stack):  # flip the path
+                    match_of_expected[via[d]] = row
+                augmented = True
+            else:
+                stack.append(match_of_expected[j])
+                next_edge.append(0)
+                via.append(-1)
+        if not augmented:
+            return False
+    return True
+
+
+def _row_key(row: Row) -> tuple[Any, ...]:
+    return tuple(_canonical_key(v) for v in row)
+
+
+def _canonical_key(value: Any) -> Any:
+    """Hashable key with the same equality as :func:`_values_equal` without tolerance."""
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, _NUMERIC):
+        n = _num(value)
+        return ("num", "nan" if isinstance(n, float) and math.isnan(n) else n)
+    if value is None:
+        return ("null",)
+    if isinstance(value, (list, tuple)):
+        return ("list", tuple(_canonical_key(v) for v in value))
+    if isinstance(value, dict):
+        return ("dict", tuple((k, _canonical_key(v)) for k, v in value.items()))
+    if isinstance(value, str):
+        return ("str", value)
+    return (type(value).__name__, value)
 
 
 class PredicateRunner:
@@ -202,12 +288,12 @@ class PredicateRunner:
         self.spec = spec
         if isinstance(spec, ExpectPredicate):
             if expected_rows is None:
-                if spec.expected is None:
+                if not spec.inline:
                     raise ValueError("expected_rows must be given for expected_file predicates")
                 expected_rows = normalize_expected(spec.expected)
             self.expected: list[Row] | None = list(expected_rows)
             # An inline scalar expectation demands a 1x1 result (ADR 0003).
-            self.scalar = spec.expected is not None and not isinstance(spec.expected, list)
+            self.scalar = spec.inline and not isinstance(spec.expected, list)
         else:
             self.expected = None
             self.scalar = False
@@ -230,11 +316,21 @@ class PredicateRunner:
                 rows = [tuple(r) for r in con.fetchall()]
             except duckdb.Error as err:
                 exc = err
-        if exc is not None:
-            if isinstance(exc, duckdb.InterruptException) and dog.fired:
-                return Outcome(OutcomeKind.TIMEOUT, "timeout", f"exceeded {timeout_s:g}s")
-            return self._classify_error(exc)
-        return self._classify_result(types, rows)
+        if dog.fired:
+            # Past the deadline, even if the query completed just before the interrupt
+            # landed: a TIMEOUT is never accepted, so this errs on the safe side.
+            return Outcome(OutcomeKind.TIMEOUT, "timeout", f"exceeded {timeout_s:g}s")
+        try:
+            if exc is not None:
+                return self._classify_error(exc)
+            return self._classify_result(types, rows)
+        except Exception as err:  # e.g. a comparison that cannot be done: never TRUE
+            return Outcome(
+                OutcomeKind.ERROR,
+                f"comparison:{type(err).__name__}",
+                f"cannot classify the result: {type(err).__name__}: {err}",
+                "comparison",
+            )
 
     def _classify_error(self, exc: duckdb.Error) -> Outcome:
         cls = type(exc).__name__

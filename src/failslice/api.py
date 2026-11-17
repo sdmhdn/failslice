@@ -23,6 +23,7 @@ from failslice.reducer import (
     Reducer,
     ReductionStats,
 )
+from failslice.runspec import RunSpec
 from failslice.safety import validate_predicate_sql
 from failslice.supervisor import SupervisedOutcome, run_supervised, write_checkpoint
 from failslice.verify import VerificationReport, verify_in_subprocess
@@ -30,6 +31,13 @@ from failslice.verify import VerificationReport, verify_in_subprocess
 __all__ = ["CheckReport", "ReductionResult", "check", "reduce", "validate_predicate", "verify"]
 
 MIN_REPLAY_S = 10.0
+
+
+def replay_reserve(wall_clock_s: float) -> float:
+    """Part of ``wall_clock_s`` kept back for export and the independent replay:
+    10% but at least ``MIN_REPLAY_S``, and never more than half the budget (so short
+    budgets still leave time to reduce)."""
+    return min(max(MIN_REPLAY_S, 0.1 * wall_clock_s), 0.5 * wall_clock_s)
 
 
 def validate_predicate(project: Project) -> None:
@@ -90,12 +98,18 @@ class ReductionResult:
     run_dir: Path
     status: str
     stats: ReductionStats | None
+    """Counters of the run; also present for ``no-candidate`` when the run got far
+    enough to count anything."""
     verification: VerificationReport | None
     notes: list[str] = field(default_factory=list)
+    spec: RunSpec | None = None
+    """The exported reproducer's contract (``spec.json``), if one was exported."""
 
     @property
     def minimality_label(self) -> str:
         """Human label: ``1-minimal (verified)`` only if certification completed."""
+        if self.status != "reduced":
+            return "no reproducer"
         if self.stats is not None and self.stats.minimality is Minimality.VERIFIED:
             return "1-minimal (verified)"
         return "reduced, minimality not verified"
@@ -132,11 +146,8 @@ def reduce(
     settings = project.settings
     deadline = time.monotonic() + settings.wall_clock_s  # covers reduction, export, replay
     run_dir, run_id = _new_run_dir(project, out_dir)
-    reserve = max(MIN_REPLAY_S, 0.1 * settings.wall_clock_s)
-    budget = Budget(
-        max_evals=settings.max_evals,
-        wall_clock_s=max(1.0, settings.wall_clock_s - reserve),
-    )
+    reserve = replay_reserve(settings.wall_clock_s)
+    budget = Budget(max_evals=settings.max_evals, wall_clock_s=settings.wall_clock_s - reserve)
     notes: list[str] = []
     stats: ReductionStats | None
     if isolate:
@@ -145,17 +156,15 @@ def reduce(
             run_dir,
             run_id,
             budget,
-            deadline=deadline - MIN_REPLAY_S,
+            deadline=deadline - reserve,
             on_progress=on_progress,
         )
         stats = _supervised_stats(sup, notes)
     else:
         stats = _reduce_in_process(project, run_dir, run_id, budget, on_progress)
-        if stats is not None and not stats.confirmed:
-            notes.append("stopped before any configuration was confirmed TRUE")
-            stats = None
-    if stats is None:
-        result = ReductionResult(run_dir, "no-candidate", None, None, notes)
+    if stats is None or not stats.confirmed:
+        notes.append("stopped before any configuration was confirmed TRUE")
+        result = ReductionResult(run_dir, "no-candidate", stats, None, notes)
         _write_result(result)
         return result
     remaining = deadline - time.monotonic()
@@ -165,7 +174,9 @@ def reduce(
         )
     else:
         verification = verify_in_subprocess(run_dir, timeout_s=remaining)
-    result = ReductionResult(run_dir, "reduced", stats, verification, notes)
+    spec = RunSpec.read(run_dir)
+    notes.extend(spec.warnings)
+    result = ReductionResult(run_dir, "reduced", stats, verification, notes, spec)
     _write_result(result)
     return result
 
@@ -181,8 +192,8 @@ def _supervised_stats(sup: SupervisedOutcome, notes: list[str]) -> ReductionStat
         notes.append(sup.error)
     if sup.recovered:
         notes.append("recovered the last checkpoint after the reduction process stopped")
-    if sup.stats is None and not sup.has_checkpoint:
-        notes.append("stopped before any configuration was confirmed TRUE")
+    if sup.stats is None:
+        return sup.unconfirmed_stats
     return sup.stats
 
 
@@ -199,7 +210,7 @@ def _reduce_in_process(
             engine,
             budget,
             on_progress=on_progress,
-            on_accept=lambda eng: write_checkpoint(eng, run_dir, run_id),
+            on_accept=lambda eng: write_checkpoint(eng, run_dir, run_id, reducer.snapshot()),
         )
         stats = reducer.run(certify=project.settings.minimality)
         if stats.confirmed:  # never export a configuration not observed TRUE
@@ -223,6 +234,7 @@ def _write_result(result: ReductionResult) -> None:
                 "sizes_before": stats.sizes_before,
                 "sizes_after": stats.sizes_after,
                 "evaluations": stats.evaluations,
+                "evaluations_started": stats.evaluations_started,
                 "outcomes": dict(stats.outcomes),
                 "error_classes": dict(stats.error_classes),
                 "cache_hits": stats.cache_hits,

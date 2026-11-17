@@ -133,7 +133,7 @@ _vals = st.integers(min_value=0, max_value=3)
 
 
 @st.composite
-def schemas(draw: st.DrawFn, max_tables: int = 3, max_rows: int = 6) -> Schema:
+def schemas(draw: st.DrawFn, max_tables: int = 4, max_rows: int = 6) -> Schema:
     n = draw(st.integers(min_value=1, max_value=max_tables))
     parents: dict[str, tuple[str, ...]] = {}
     rows: dict[str, Rows] = {}
