@@ -251,8 +251,9 @@ Two matching runs are a screen, not proof; the independent replay is the real ch
   runs the total is bounded by `wall_clock_s` plus fixed grace periods (kill, recovery).
 - Per-evaluation timeout is **cooperative**: a watchdog calls `con.interrupt()`; DuckDB stops
   at its next interruption check. The watchdog is joined before the connection is reused.
-  If the watchdog fired, the outcome is TIMEOUT even if the query completed just before
-  the interrupt landed (a TIMEOUT is never accepted, so this errs on the safe side).
+  If the watchdog fired, or the evaluation took longer than `eval_timeout_s` by a
+  high-resolution clock (`perf_counter`; Windows timers are coarse), the outcome is TIMEOUT
+  even if the query completed (a TIMEOUT is never accepted, so this errs on the safe side).
   In-process, the timeout covers SQL execution only; classifying the result (e.g. the
   user's `raises.match` regex, or a large tolerant comparison) is bounded only in an
   isolated run, where the supervisor kills an evaluation that overruns

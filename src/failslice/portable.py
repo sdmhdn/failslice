@@ -399,6 +399,7 @@ def run_check(con: duckdb.DuckDBPyConnection, check: Check, timeout_s: float) ->
     rows: list[Row] = []
     types: list[str] = []
     exc: duckdb.Error | None = None
+    started = time.perf_counter()
     with _Watchdog(con, timeout_s) as dog:
         try:
             con.execute(check.query)
@@ -406,9 +407,10 @@ def run_check(con: duckdb.DuckDBPyConnection, check: Check, timeout_s: float) ->
             rows = [tuple(r) for r in con.fetchall()]
         except duckdb.Error as err:
             exc = err
-    if dog.fired:
-        # Past the deadline, even if the query completed just before the interrupt
-        # landed: a TIMEOUT is never accepted, so this errs on the safe side.
+    if dog.fired or time.perf_counter() - started > timeout_s:
+        # Past the deadline, even if the query completed before the interrupt landed
+        # (or before a coarse timer could fire): a TIMEOUT is never accepted, so this
+        # errs on the safe side.
         return Outcome(OutcomeKind.TIMEOUT, "timeout", f"exceeded {timeout_s:g}s")
     try:
         if exc is not None:

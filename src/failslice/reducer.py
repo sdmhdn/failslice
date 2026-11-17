@@ -160,7 +160,7 @@ class Reducer:
         before_eval: Callable[[], None] | None = None,
         on_accept: Callable[[Engine], None] | None = None,
         on_confirmed: Callable[[Engine], None] | None = None,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self.engine = engine
         self.budget = budget
