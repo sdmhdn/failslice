@@ -1,0 +1,29 @@
+version: 1
+tables:
+  region:   { path: data/generated/region.parquet, primary_key: r_regionkey }
+  nation:   { path: data/generated/nation.parquet, primary_key: n_nationkey }
+  customer: { path: data/generated/customer.parquet, primary_key: c_custkey }
+  orders:   { path: data/generated/orders.parquet }  # o_orderkey should be unique, but is not
+  lineitem: { path: data/generated/lineitem.parquet }
+foreign_keys:
+  - nation.n_regionkey -> region.r_regionkey
+  - customer.c_nationkey -> nation.n_nationkey
+  - orders.o_custkey -> customer.c_custkey
+  - lineitem.l_orderkey -> orders.o_orderkey
+predicate:
+  # The bug: the revenue-by-region report no longer adds up to the revenue in lineitem.
+  expect:
+    query: |
+      WITH revenue_by_region AS (
+        SELECT r_name, sum(l_extendedprice * (1 - l_discount)) AS revenue
+        FROM lineitem
+        JOIN orders   ON l_orderkey = o_orderkey
+        JOIN customer ON o_custkey = c_custkey
+        JOIN nation   ON c_nationkey = n_nationkey
+        JOIN region   ON n_regionkey = r_regionkey
+        GROUP BY r_name)
+      SELECT coalesce((SELECT sum(revenue) FROM revenue_by_region), 0)
+           - coalesce((SELECT sum(l_extendedprice * (1 - l_discount)) FROM lineitem), 0)
+    expected: 0
+    mode: differs
+settings: { seed: 0, wall_clock_s: 300 }

@@ -49,5 +49,6 @@ smaller reproducer exists.
 | [Command line and Python API](cli.md) | commands, options, exit codes, `--json`, the library API |
 | [Run artifacts](artifacts.md) | the run directory, manifest, report, CSV, `explain`, the generated test, replay |
 | [MCP server](mcp.md) | `failslice-mcp` for AI agents: setup, tools, resources, limits |
+| [Examples](../examples/) and [benchmarks](../benchmarks/README.md) | four bug scenarios with generated results; how the benchmark table is measured |
 | [Design](design.md) | architecture and the reasoning behind it; decisions in [`decisions/`](decisions/) |
 | [راهنمای فارسی](guide-fa.md) | the complete user guide in Persian |

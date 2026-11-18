@@ -5,6 +5,12 @@ has no releases yet.
 
 ## Unreleased
 
+- Phase 5: four example scenarios (`tpch_fanout`, `null_not_in`, `date_parse_crash`,
+  `latest_tie`) with a driver `examples/run.py` and generated README sections, and
+  `benchmarks/run.py` with a generated README table (ADR 0012). A matching `raises` error's
+  signature is now its concrete class plus the matched text, so a file with several bad
+  values passes the determinism check; `PORTABLE_VERSION` 2.
+
 - Phase 4: MCP server `failslice-mcp` (stdio; tools `inspect_dataset`,
   `suggest_relationships`, `check_predicate`, `reduce_failure`, `verify_reproducer`,
   `explain_reproducer`, `export_pytest`; run resources; prompt `debug-data-bug`; ADR 0011),

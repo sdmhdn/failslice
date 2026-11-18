@@ -49,7 +49,7 @@ __all__ = [
     "run_check",
 ]
 
-PORTABLE_VERSION = 1
+PORTABLE_VERSION = 2
 """Bumped whenever classification or comparison semantics change."""
 
 Row = tuple[Any, ...]
@@ -70,6 +70,9 @@ class Outcome:
 
     ``signature`` identifies *what* was observed (the boolean value, a hash of the
     result, or the error class and message) so the determinism check can compare runs.
+    For a matching ``raises`` error it is the concrete error class plus the text the
+    user's regex matched, not the full message: with several offending values, which one
+    DuckDB reports first can depend on the scan order (ADR 0012).
     ``error_class`` is set for ERROR outcomes caused by an exception and for TRUE
     outcomes of the ``raises`` form.
     """
@@ -431,8 +434,9 @@ def _classify_error(check: Check, exc: duckdb.Error) -> Outcome:
         class_ok = check.error_class is None or check.error_class in {
             c.__name__ for c in type(exc).__mro__
         }
-        if class_ok and _regex(check.match or "", check.flags).search(str(exc)):
-            return Outcome(OutcomeKind.TRUE, _error_signature(exc), str(exc), cls)
+        match = _regex(check.match or "", check.flags).search(str(exc)) if class_ok else None
+        if match is not None:
+            return Outcome(OutcomeKind.TRUE, f"error:{cls}:{match.group(0)}", str(exc), cls)
         return Outcome(
             OutcomeKind.ERROR, _error_signature(exc), f"different error: {cls}: {exc}", cls
         )

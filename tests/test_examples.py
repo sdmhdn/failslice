@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import importlib.util
+import json
+import os
 import runpy
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
+
+import duckdb
+import pytest
 
 import failslice
 
@@ -61,3 +68,294 @@ def test_quickstart_cli(tmp_path: Path) -> None:
         check=False,
     )
     assert tests.returncode == 0, tests.stdout
+
+
+# --------------------------------------------------------------- Phase 5 scenarios
+ROOT = Path(__file__).parents[1]
+
+
+def _load(path: Path, name: str) -> Any:
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+driver = _load(ROOT / "examples" / "run.py", "failslice_examples_driver")
+bench = _load(ROOT / "benchmarks" / "run.py", "failslice_benchmarks_driver")
+RESULTS = json.loads((ROOT / "benchmarks" / "results.json").read_text(encoding="utf-8"))
+
+
+def _copy(name: str, tmp_path: Path) -> Path:
+    work = tmp_path / name
+    shutil.copytree(
+        ROOT / "examples" / name, work, ignore=shutil.ignore_patterns("data", ".failslice")
+    )
+    return work
+
+
+def _tpch_or_skip() -> None:
+    """Provisioning the tpch extension needs network unless it is cached.
+
+    ``FAILSLICE_REQUIRE_TPCH=1`` (set in CI) turns unavailability into a failure.
+    """
+    make_data = runpy.run_path(
+        str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
+    )
+    con = duckdb.connect()
+    try:
+        make_data["load_tpch"](con)
+    except make_data["ExtensionUnavailableError"] as err:
+        if os.environ.get("FAILSLICE_REQUIRE_TPCH") == "1":
+            raise
+        pytest.skip(f"tpch extension unavailable: {err}")
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize("name", driver.NAMES)
+def test_scenario(name: str, tmp_path: Path) -> None:
+    if name == "tpch_fanout":
+        _tpch_or_skip()
+    run = driver.run_example(name, _copy(name, tmp_path))
+    assert run.status == "reduced" and run.verification == "verified" and run.test_passed
+    assert run.minimality == "1-minimal (verified)"
+    # The README's generated section (counts and surviving rows) is what a fresh run gives.
+    assert driver.render(run) == driver.readme_section(ROOT / "examples" / name / "README.md")
+    # The benchmark table's deterministic columns agree with the fresh run.
+    (recorded,) = [s for s in RESULTS["scenarios"] if s["name"] == name]
+    assert (recorded["rows_before"], recorded["rows_after"], recorded["minimality"]) == (
+        run.rows_before,
+        run.rows_after,
+        run.minimality,
+    )
+
+
+def test_quickstart_benchmark_row(tmp_path: Path) -> None:
+    work = tmp_path / "quickstart"
+    shutil.copytree(EXAMPLE, work, ignore=shutil.ignore_patterns("generated", ".failslice"))
+    driver.generate(work)
+    run = driver.reduce_example("quickstart", work)
+    (recorded,) = [s for s in RESULTS["scenarios"] if s["name"] == "quickstart"]
+    assert (recorded["rows_before"], recorded["rows_after"]) == (run.rows_before, run.rows_after)
+
+
+def test_benchmark_table_is_generated() -> None:
+    assert bench.main(["--check"]) == 0
+    assert [s["name"] for s in RESULTS["scenarios"]] == [label for label, _, _ in bench.SCENARIOS]
+    for scenario in RESULTS["scenarios"]:
+        assert scenario["minimality"] == "1-minimal (verified)" and scenario["test_passed"]
+        assert scenario["verification"] == "verified"
+        assert scenario["kept"] == scenario["rows_after"] / scenario["rows_before"]
+
+
+@pytest.mark.parametrize(("label", "name", "kwargs"), [v for v in bench.SCENARIOS if v[2]], ids=str)
+def test_benchmark_variant(label: str, name: str, kwargs: dict[str, Any], tmp_path: Path) -> None:
+    # Variants (e.g. TPC-H at sf 0.1) appear only in the benchmark: re-run them too.
+    if name == "tpch_fanout":
+        _tpch_or_skip()
+    work = _copy(name, tmp_path)
+    driver.generate(work, **kwargs)
+    run = driver.reduce_example(name, work)
+    assert run.ok, run.test_output
+    (recorded,) = [s for s in RESULTS["scenarios"] if s["name"] == label]
+    assert (recorded["rows_before"], recorded["rows_after"], recorded["minimality"]) == (
+        run.rows_before,
+        run.rows_after,
+        run.minimality,
+    )
+
+
+def test_benchmark_refuses_unsuccessful_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    failed = driver.ExampleRun(
+        name="x",
+        status="reduced",
+        minimality="reduced",
+        verification="verified",
+        sizes_before={"t": 2},
+        sizes_after={"t": 1},
+        evaluations=1,
+        wall_s=0.1,
+        test_passed=False,
+        run_dir="r",
+        test_output="AssertionError: boom",
+    )
+    fake = type(
+        "Fake",
+        (),
+        {
+            "generate": staticmethod(lambda directory, **kw: None),
+            "reduce_example": staticmethod(lambda name, directory: failed),
+        },
+    )
+    monkeypatch.setattr(bench, "_examples", lambda: fake)
+    monkeypatch.setattr(bench, "SCENARIOS", (("quickstart", "quickstart", {}),))
+    with pytest.raises(SystemExit, match="not successful"):
+        bench.measure(1)
+
+
+def test_date_parse_crash_values_are_valid_us_style(tmp_path: Path) -> None:
+    # The README's claim: the bad text is a valid US-style time; only day-first fails.
+    work = _copy("date_parse_crash", tmp_path)
+    driver.generate(work)
+    con = duckdb.connect()
+    try:
+        path = str(work / "data" / "generated" / "shipments.parquet").replace("'", "''")
+        bad = con.execute(
+            f"SELECT shipped_at FROM read_parquet('{path}') WHERE shipment_id >= 30000"
+        ).fetchall()
+        assert len(bad) == 3
+        for (text,) in bad:
+            con.execute("SELECT strptime(?, '%m/%d/%Y %I:%M %p')", [text]).fetchone()
+            with pytest.raises(duckdb.InvalidInputException, match="Could not parse string"):
+                con.execute("SELECT strptime(?, '%d/%m/%Y %H:%M')", [text]).fetchone()
+    finally:
+        con.close()
+
+
+def test_tpch_proxy_settings_and_redaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    make_data = runpy.run_path(
+        str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
+    )
+    err = RuntimeError("Failed to parse http_proxy 'http://user:p%40ss@10.0.0.1:3128'")
+    assert "p%40ss" not in make_data["_redact"](err) and "***@10.0.0.1" in make_data["_redact"](err)
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://us%40er:se%3Acret@proxy.example:3128")
+    con = duckdb.connect()
+    try:
+        make_data["_proxy"](con)  # sets DuckDB options only; no network access
+        settings = con.execute(
+            "SELECT current_setting('http_proxy'), current_setting('http_proxy_username')"
+        ).fetchone()
+        assert settings == ("proxy.example:3128", "us@er")
+    finally:
+        con.close()
+
+
+class _FakeConnection:
+    def __init__(self, error: Exception | None) -> None:
+        self.error = error
+
+    def execute(self, sql: str, parameters: Any = None) -> _FakeConnection:
+        if sql.startswith(("LOAD", "INSTALL")) and self.error is not None:
+            raise self.error
+        return self
+
+    def close(self) -> None:
+        pass
+
+
+SECRET = "http://user:p%40ss@10.0.0.1:3128"
+
+
+@pytest.mark.parametrize(
+    ("error", "kind"),
+    [
+        (duckdb.HTTPException(f"Failed to download via '{SECRET}'"), "ExtensionUnavailableError"),
+        (
+            duckdb.IOException(f"Failed to download extension via '{SECRET}'"),
+            "ExtensionUnavailableError",
+        ),
+        (
+            duckdb.IOException('IO Error: Failed to download extension "tpch" at URL "x"'),
+            "ExtensionUnavailableError",
+        ),
+        # Local I/O problems are not "unavailable", even when they mention HTTP or a proxy.
+        (duckdb.IOException("Failed to create directory '/home/x/.duckdb'"), "ProvisioningError"),
+        (
+            duckdb.IOException(
+                "Extension has an invalid signature; see https://duckdb.org/docs/extensions"
+            ),
+            "ProvisioningError",
+        ),
+        (duckdb.IOException("cannot write proxy cache file"), "ProvisioningError"),
+        (duckdb.IOException(f"Could not establish connection to '{SECRET}'"), "ProvisioningError"),
+        # Anything else is a defect or bad configuration: never a skip.
+        (
+            duckdb.InvalidInputException(f"Failed to parse http_proxy '{SECRET}'"),
+            "ProvisioningError",
+        ),
+        (duckdb.ParserException("syntax error"), "ProvisioningError"),
+    ],
+)
+def test_tpch_provisioning_errors(
+    error: Exception, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_data = runpy.run_path(
+        str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
+    )
+    load = make_data["load_tpch"]
+    fake = type(
+        "FakeDuckDB",
+        (),
+        {
+            "connect": staticmethod(lambda: _FakeConnection(error)),
+            "Error": duckdb.Error,
+            "IOException": duckdb.IOException,
+            "HTTPException": duckdb.HTTPException,
+        },
+    )
+    monkeypatch.setitem(load.__globals__, "duckdb", fake)
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(make_data[kind]) as caught:
+        load(_FakeConnection(duckdb.IOException("not cached")))
+    assert "p%40ss" not in str(caught.value)
+    # The raw exception (which may carry credentials) is not chained into tracebacks.
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://user:s3cret@proxy.example:notaport",  # invalid port
+        "http:///user:s3cret@proxy.example:3128",  # no host name
+    ],
+)
+def test_tpch_invalid_proxy_url_is_not_echoed(url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    make_data = runpy.run_path(
+        str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
+    )
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTP_PROXY", url)
+    with pytest.raises(make_data["ProvisioningError"]) as caught:
+        make_data["_proxy"](duckdb.connect())
+    assert "s3cret" not in str(caught.value) and caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "via 'http://user:s3cret@10.0.0.1:3128'",
+        "via 'http:///user:s3cret@proxy.example:3128'",
+        "proxy user:s3cret@10.0.0.1:3128 refused",
+    ],
+)
+def test_redact_hides_credentials(text: str) -> None:
+    make_data = runpy.run_path(
+        str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
+    )
+    assert "s3cret" not in make_data["_redact"](RuntimeError(text))
+
+
+@pytest.mark.parametrize("password", ["s3'cret", 's3"cret', "s3 cret", "s3%27cret", "s@3/cret"])
+def test_redact_removes_configured_credentials_literally(
+    password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from urllib.parse import quote
+
+    make_data = runpy.run_path(
+        str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
+    )
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    encoded = quote(password, safe="")
+    monkeypatch.setenv("HTTPS_PROXY", f"http://user:{encoded}@10.0.0.1:3128")
+    for shown in (password, encoded):  # DuckDB may echo either form
+        message = f"Failed to parse http_proxy 'http://user:{shown}@10.0.0.1:3128'"
+        redacted = make_data["_redact"](RuntimeError(message))
+        assert shown not in redacted, redacted
