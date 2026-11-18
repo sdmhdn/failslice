@@ -3,8 +3,8 @@
   "measured_at": "2026-11-18",
   "repeat": 3,
   "environment": {
-    "failslice": "0.0.1.dev0",
-    "revision": "1088226",
+    "failslice": "0.1.0",
+    "revision": "7f3041b",
     "duckdb": "2.0.0",
     "python": "3.12.15",
     "os": "Linux 6.6.87.2-microsoft-standard-WSL2",
@@ -20,11 +20,11 @@
       "rows_after": 4,
       "kept": 0.00015384023691396485,
       "evaluations": 37,
-      "wall_s": 1.255,
+      "wall_s": 1.365,
       "wall_s_runs": [
-        1.226,
-        1.295,
-        1.255
+        1.443,
+        1.365,
+        1.319
       ],
       "minimality": "1-minimal (verified)",
       "verification": "verified",
@@ -37,11 +37,11 @@
       "rows_after": 6,
       "kept": 7.822073892524705e-05,
       "evaluations": 57,
-      "wall_s": 1.989,
+      "wall_s": 2.38,
       "wall_s_runs": [
-        1.989,
-        2.099,
-        1.886
+        2.605,
+        2.259,
+        2.38
       ],
       "minimality": "1-minimal (verified)",
       "verification": "verified",
@@ -54,11 +54,11 @@
       "rows_after": 6,
       "kept": 7.836959886520821e-06,
       "evaluations": 63,
-      "wall_s": 3.788,
+      "wall_s": 3.89,
       "wall_s_runs": [
-        3.857,
-        3.784,
-        3.788
+        4.009,
+        3.811,
+        3.89
       ],
       "minimality": "1-minimal (verified)",
       "verification": "verified",
@@ -71,11 +71,11 @@
       "rows_after": 3,
       "kept": 0.000491722668415014,
       "evaluations": 21,
-      "wall_s": 0.934,
+      "wall_s": 1.046,
       "wall_s_runs": [
-        0.934,
-        0.943,
-        0.897
+        0.925,
+        1.066,
+        1.046
       ],
       "minimality": "1-minimal (verified)",
       "verification": "verified",
@@ -88,11 +88,11 @@
       "rows_after": 2,
       "kept": 6.665111473989403e-05,
       "evaluations": 31,
-      "wall_s": 0.917,
+      "wall_s": 0.984,
       "wall_s_runs": [
-        0.917,
-        0.936,
-        0.912
+        0.984,
+        1.049,
+        0.96
       ],
       "minimality": "1-minimal (verified)",
       "verification": "verified",
@@ -105,11 +105,11 @@
       "rows_after": 3,
       "kept": 0.00027272727272727274,
       "evaluations": 37,
-      "wall_s": 1.056,
+      "wall_s": 1.079,
       "wall_s_runs": [
-        1.056,
-        1.069,
-        1.015
+        1.079,
+        1.097,
+        1.038
       ],
       "minimality": "1-minimal (verified)",
       "verification": "verified",

@@ -160,14 +160,14 @@ Four more scenarios, each runnable with one command from a checkout and each nee
 
 | scenario | input rows | output rows | kept | evaluations | wall time | minimality |
 |---|---:|---:|---:|---:|---:|---|
-| [quickstart](https://github.com/sdmhdn/failslice/blob/main/examples/quickstart/) | 26,001 | 4 | 0.0154% | 37 | 1.3 s | 1-minimal (verified) |
-| [tpch_fanout](https://github.com/sdmhdn/failslice/blob/main/examples/tpch_fanout/) | 76,706 | 6 | 0.0078% | 57 | 2.0 s | 1-minimal (verified) |
-| [tpch_fanout (sf 0.1)](https://github.com/sdmhdn/failslice/blob/main/examples/tpch_fanout/) | 765,603 | 6 | 0.0008% | 63 | 3.8 s | 1-minimal (verified) |
-| [null_not_in](https://github.com/sdmhdn/failslice/blob/main/examples/null_not_in/) | 6,101 | 3 | 0.0492% | 21 | 0.9 s | 1-minimal (verified) |
-| [date_parse_crash](https://github.com/sdmhdn/failslice/blob/main/examples/date_parse_crash/) | 30,007 | 2 | 0.0067% | 31 | 0.9 s | 1-minimal (verified) |
+| [quickstart](https://github.com/sdmhdn/failslice/blob/main/examples/quickstart/) | 26,001 | 4 | 0.0154% | 37 | 1.4 s | 1-minimal (verified) |
+| [tpch_fanout](https://github.com/sdmhdn/failslice/blob/main/examples/tpch_fanout/) | 76,706 | 6 | 0.0078% | 57 | 2.4 s | 1-minimal (verified) |
+| [tpch_fanout (sf 0.1)](https://github.com/sdmhdn/failslice/blob/main/examples/tpch_fanout/) | 765,603 | 6 | 0.0008% | 63 | 3.9 s | 1-minimal (verified) |
+| [null_not_in](https://github.com/sdmhdn/failslice/blob/main/examples/null_not_in/) | 6,101 | 3 | 0.0492% | 21 | 1.0 s | 1-minimal (verified) |
+| [date_parse_crash](https://github.com/sdmhdn/failslice/blob/main/examples/date_parse_crash/) | 30,007 | 2 | 0.0067% | 31 | 1.0 s | 1-minimal (verified) |
 | [latest_tie](https://github.com/sdmhdn/failslice/blob/main/examples/latest_tie/) | 11,000 | 3 | 0.0273% | 37 | 1.1 s | 1-minimal (verified) |
 
-Measured 2026-11-18 on one machine (12th Gen Intel(R) Core(TM) i7-1260P, 16 logical CPUs, 7.5 GiB RAM; Linux 6.6.87.2-microsoft-standard-WSL2; Python 3.12.15, DuckDB 2.0.0, FailSlice 0.0.1.dev0 at 1088226). Wall time is the median of 3 runs of `reduce(isolate=True)` including the replay and artifacts, without data generation; it depends on the machine. [Method](https://github.com/sdmhdn/failslice/blob/main/benchmarks/README.md).
+Measured 2026-11-18 on one machine (12th Gen Intel(R) Core(TM) i7-1260P, 16 logical CPUs, 7.5 GiB RAM; Linux 6.6.87.2-microsoft-standard-WSL2; Python 3.12.15, DuckDB 2.0.0, FailSlice 0.1.0 at 7f3041b). Wall time is the median of 3 runs of `reduce(isolate=True)` including the replay and artifacts, without data generation; it depends on the machine. [Method](https://github.com/sdmhdn/failslice/blob/main/benchmarks/README.md).
 <!-- benchmarks:end -->
 
 ## Related tools
