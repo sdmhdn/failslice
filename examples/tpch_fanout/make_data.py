@@ -25,6 +25,7 @@ import duckdb
 
 SCALE_FACTOR = 0.01
 TABLES = ("region", "nation", "customer", "orders", "lineitem")
+PROXY_VARIABLES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
 
 
 class ExtensionUnavailableError(RuntimeError):
@@ -38,11 +39,7 @@ class ProvisioningError(RuntimeError):
 def _proxy(con: duckdb.DuckDBPyConnection) -> None:
     """Pass the configured proxy to DuckDB (it cannot parse credentials in the URL)."""
     url = next(
-        (
-            os.environ[k]
-            for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
-            if os.environ.get(k)
-        ),
+        (os.environ[k] for k in PROXY_VARIABLES if os.environ.get(k)),
         None,
     )
     if url is None:
@@ -63,20 +60,36 @@ def _proxy(con: duckdb.DuckDBPyConnection) -> None:
         con.execute("SET http_proxy_password = ?", [unquote(parts.password)])
 
 
+def _secrets() -> list[str]:
+    """The user-info parts of every configured proxy URL, raw and percent-decoded."""
+    found: set[str] = set()
+    for key in PROXY_VARIABLES:
+        rest = os.environ.get(key, "").split("://", 1)[-1].lstrip("/")
+        if "@" not in rest:
+            continue
+        userinfo = rest.rsplit("@", 1)[0]
+        for part in (userinfo, *userinfo.split(":", 1)):
+            found.update({part, unquote(part)})
+    return sorted((x for x in found if x), key=len, reverse=True)
+
+
 def _redact(err: BaseException) -> str:
-    """Never print proxy credentials that DuckDB may echo in its message."""
-    text = re.sub(r"//[^\s'\"]*@", "//***@", str(err))  # scheme://user:pass@ (any slashes)
+    """Remove proxy credentials that DuckDB may echo in its message.
+
+    The configured credentials are removed literally (whatever characters they contain);
+    the patterns are a second line for URLs that did not come from the environment.
+    """
+    text = str(err)
+    for secret in _secrets():
+        text = text.replace(secret, "***")
+    text = re.sub(r"//[^\s'\"]*@", "//***@", text)  # scheme://user:pass@ (any slashes)
     return re.sub(r"[^\s'\"/@]+:[^\s'\"/@]*@", "***@", text)  # user:pass@ without a scheme
 
 
 # DuckDB raises IOException for download failures but also for local problems (cache
-# directory, invalid signature). Only these download failures count as "unavailable";
-# everything else must fail loudly, never turn into a skipped test.
-_DOWNLOAD_FAILURE = re.compile(
-    r"Failed to download|Could not establish connection|Could not resolve|"
-    r"Unable to connect|Connection refused|timed out|HTTP|proxy",
-    re.IGNORECASE,
-)
+# directory, invalid signature). Only its download-failure message counts as
+# "unavailable"; everything else must fail loudly, never turn into a skipped test.
+_DOWNLOAD_FAILURE = re.compile(r"^(IO Error: )?Failed to download extension")
 
 
 def load_tpch(con: duckdb.DuckDBPyConnection) -> None:
@@ -93,7 +106,7 @@ def load_tpch(con: duckdb.DuckDBPyConnection) -> None:
         installer.execute("INSTALL tpch")
     except duckdb.Error as err:
         unavailable = isinstance(err, duckdb.HTTPException) or (
-            isinstance(err, duckdb.IOException) and _DOWNLOAD_FAILURE.search(str(err))
+            isinstance(err, duckdb.IOException) and _DOWNLOAD_FAILURE.match(str(err))
         )
         if not unavailable:
             raise ProvisioningError(

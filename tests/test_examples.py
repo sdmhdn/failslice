@@ -260,12 +260,19 @@ SECRET = "http://user:p%40ss@10.0.0.1:3128"
             "ExtensionUnavailableError",
         ),
         (
-            duckdb.IOException(f"Could not establish connection to '{SECRET}'"),
+            duckdb.IOException('IO Error: Failed to download extension "tpch" at URL "x"'),
             "ExtensionUnavailableError",
         ),
-        # Local I/O problems are not "unavailable": a cache directory or signature defect.
+        # Local I/O problems are not "unavailable", even when they mention HTTP or a proxy.
         (duckdb.IOException("Failed to create directory '/home/x/.duckdb'"), "ProvisioningError"),
-        (duckdb.IOException("Extension has an invalid signature"), "ProvisioningError"),
+        (
+            duckdb.IOException(
+                "Extension has an invalid signature; see https://duckdb.org/docs/extensions"
+            ),
+            "ProvisioningError",
+        ),
+        (duckdb.IOException("cannot write proxy cache file"), "ProvisioningError"),
+        (duckdb.IOException(f"Could not establish connection to '{SECRET}'"), "ProvisioningError"),
         # Anything else is a defect or bad configuration: never a skip.
         (
             duckdb.InvalidInputException(f"Failed to parse http_proxy '{SECRET}'"),
@@ -333,3 +340,22 @@ def test_redact_hides_credentials(text: str) -> None:
         str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
     )
     assert "s3cret" not in make_data["_redact"](RuntimeError(text))
+
+
+@pytest.mark.parametrize("password", ["s3'cret", 's3"cret', "s3 cret", "s3%27cret", "s@3/cret"])
+def test_redact_removes_configured_credentials_literally(
+    password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from urllib.parse import quote
+
+    make_data = runpy.run_path(
+        str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
+    )
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    encoded = quote(password, safe="")
+    monkeypatch.setenv("HTTPS_PROXY", f"http://user:{encoded}@10.0.0.1:3128")
+    for shown in (password, encoded):  # DuckDB may echo either form
+        message = f"Failed to parse http_proxy 'http://user:{shown}@10.0.0.1:3128'"
+        redacted = make_data["_redact"](RuntimeError(message))
+        assert shown not in redacted, redacted
