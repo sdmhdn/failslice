@@ -379,7 +379,7 @@ def inspect_tables(
     stages = {name: q(f"__fs_inspect_{i}") for i, name in enumerate(paths)}
     inspected: dict[str, TableInspection] = {}
     clipped: dict[str, tuple[int, ...]] = {}
-    with duckdb.connect(":memory:") as con:
+    with duckdb.connect(":memory:", config={"temp_directory": ""}) as con:
         con.execute("SET autoinstall_known_extensions = false")
         con.execute("SET autoload_known_extensions = false")
         con.execute("SET threads = 1")

@@ -150,6 +150,12 @@ class _RawConfig(_Model):
     predicate: dict[str, Any]
     settings: Settings = Field(default_factory=Settings)
 
+    @field_validator("foreign_keys", mode="before")
+    @classmethod
+    def _empty_foreign_keys(cls, value: Any) -> Any:
+        # `foreign_keys:` with every entry commented out (as `failslice init` writes it).
+        return [] if value is None else value
+
 
 @dataclass(frozen=True)
 class ForeignKey:

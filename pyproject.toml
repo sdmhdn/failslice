@@ -14,7 +14,7 @@ authors = [{ name = "Saeed Mahdian", email = "saeed.mahdian@gmail.com" }]
 maintainers = [{ name = "Saeed Mahdian", email = "saeed.mahdian@gmail.com" }]
 keywords = ["delta-debugging", "test-case-reduction", "duckdb", "data-quality", "mcp"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -39,10 +39,12 @@ dependencies = [
 
 [project.scripts]
 failslice = "failslice.cli:main"
-failslice-mcp = "failslice.mcp_server:main"
+# `failslice-mcp` is provided by the separate failslice-mcp distribution (ADR 0013).
 
 [project.urls]
 Homepage = "https://github.com/sdmhdn/failslice"
+Documentation = "https://github.com/sdmhdn/failslice/blob/main/docs/index.md"
+Source = "https://github.com/sdmhdn/failslice"
 Issues = "https://github.com/sdmhdn/failslice/issues"
 Changelog = "https://github.com/sdmhdn/failslice/blob/main/CHANGELOG.md"
 
@@ -54,13 +56,44 @@ dev = [
     "ruff>=0.17.5",
     "mypy>=2.4",
     "types-pyyaml>=6.0.12.20261113",
+    # The workspace member, so `uv run failslice-mcp` works in a checkout.
+    "failslice-mcp",
+    "jsonschema>=4.26.0",
 ]
+
+[tool.uv.workspace]
+members = ["packages/failslice-mcp"]
+
+[tool.uv.sources]
+failslice-mcp = { workspace = true }
 
 [tool.hatch.version]
 path = "src/failslice/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/failslice"]
+
+[tool.hatch.build.targets.sdist]
+# Explicit list: no hand-off notes, generated data, run outputs or caches.
+only-include = [
+    "src",
+    "tests",
+    "docs",
+    "examples",
+    "benchmarks/README.md",
+    "benchmarks/run.py",
+    "benchmarks/results.json",
+    "scripts",
+    "server.json",
+    "CONTRIBUTING.md",
+    "packages",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CITATION.cff",
+    "uv.lock",
+]
+exclude = ["**/data/generated", "**/.failslice", "**/__pycache__"]
 
 [tool.ruff]
 line-length = 100

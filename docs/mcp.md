@@ -8,39 +8,55 @@ its context. Design and limits: [ADR 0011](decisions/0011-mcp-server.md).
 ## Running it
 
 ```bash
-failslice-mcp --root /absolute/path/to/your/data      # from an installed FailSlice
-uv run --directory /path/to/failslice failslice-mcp --root /absolute/path/to/data   # from source
+uvx failslice-mcp --root /absolute/path/to/your/data          # from PyPI, nothing to install
+python -m failslice.mcp_server --root /absolute/path/to/data   # with only `failslice` installed
+uv run failslice-mcp --root /absolute/path/to/data             # in a checkout, after `uv sync`
 ```
 
-`--root` is required. The server can read supported files only inside it and writes only
-under `<root>/.failslice/`. Options: `--max-evals`, `--wall-clock`, `--eval-timeout`
-(ceilings for what an agent may request; defaults 5,000 evaluations, 900 s, 30 s).
+The `failslice-mcp` command comes from the small `failslice-mcp` distribution, which
+installs `failslice` of the same version ([ADR 0013](decisions/0013-packaging-and-release.md)).
+`uvx failslice-mcp@latest` picks up a newer release.
 
-FailSlice is not on PyPI yet. Once it is, `uvx --from failslice failslice-mcp --root ...`
-will work without a checkout.
+`--root` is required and must be an existing directory. The server can read supported
+files only inside it and writes only under `<root>/.failslice/`. Options: `--max-evals`,
+`--wall-clock`, `--eval-timeout` (ceilings for what an agent may request; defaults 5,000
+evaluations, 900 s, 30 s; positive numbers only). A bad option or root is reported as a
+usage error (exit status 2).
 
 ## Client configuration
 
-All three clients use the same `mcpServers` format; use absolute paths.
+Use absolute paths.
+
+**Claude Code** (writes the entry for you; add `--scope project` to put it in `.mcp.json`
+for the whole team):
+
+```bash
+claude mcp add failslice -- uvx failslice-mcp --root /absolute/path/to/your/data
+```
+
+**Claude Desktop** (`claude_desktop_config.json`) and **Cursor** (`.cursor/mcp.json` in
+the project, or `~/.cursor/mcp.json`), same entry:
 
 ```json
 {
   "mcpServers": {
     "failslice": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/failslice", "failslice-mcp",
-               "--root", "/path/to/your/data"]
+      "command": "uvx",
+      "args": ["failslice-mcp", "--root", "/absolute/path/to/your/data"]
     }
   }
 }
 ```
 
-- **Claude Code:** put it in `.mcp.json` at your project root (or use `claude mcp add`).
-- **Claude Desktop:** add it to `claude_desktop_config.json`.
-- **Cursor:** add it to `.cursor/mcp.json`.
+Claude Desktop does not read your shell's `PATH`; if it cannot start `uvx`, give its
+absolute path as `command` (`which uvx` shows it).
 
-The FailSlice tests exercise the server through the SDK's in-memory client; a session from
-Claude Code was tried by hand. Claude Desktop and Cursor use the same configuration format
+From a checkout instead of PyPI, use `"command": "uv"` and
+`"args": ["run", "--directory", "/path/to/failslice", "failslice-mcp", "--root", "..."]`.
+
+The FailSlice tests exercise the server through the SDK's in-memory client, and CI starts
+the installed `failslice-mcp` command and drives it over stdio with the SDK client; a
+session from Claude Code was tried by hand. Claude Desktop and Cursor use the same configuration format
 but are not tested by the project.
 
 Reductions can take minutes. The server sends progress notifications (elapsed seconds and
@@ -50,7 +66,10 @@ timeout; raise it if your client allows.
 ## Tools
 
 Every tool returns `{format, status, data, error, warnings}`; `error` is
-`{code, message, field, retryable}` and the result is marked as an error when it is set.
+`{code, message, field, retryable}`. Only invocation and internal errors (`status:
+"error"`) are marked as MCP tool errors; domain outcomes such as `failed` (for example a
+predicate that is never TRUE) or `replay-failed` are ordinary results that may still
+carry an `error` object explaining them.
 
 | tool | does |
 |---|---|
@@ -97,7 +116,9 @@ Runs are addressed by `run_id` (returned by `reduce_failure`) or `latest`.
 | `failslice://runs/{run_id}/tables/{table}/preview` | first rows of a reduced table, with exact counts |
 
 `{run_id}` may be `latest`: the most recently finished run with a valid manifest. Only
-these artifacts are readable (never through a symlink); there is no generic file reader.
+these artifacts are readable; there is no generic file reader. The manifest and the report
+are refused if they are symlinks; a table preview follows a symlink only to a target
+inside the same run directory.
 
 ## Prompt
 

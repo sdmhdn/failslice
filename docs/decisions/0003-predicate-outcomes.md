@@ -13,7 +13,7 @@
   ERROR. No scalar-subquery wrapper (it would turn "zero rows" into NULL).
 - `raises:` a non-matching error is ERROR (different failure, slippage guard), never TRUE.
 - Results are fetched completely before classification. TIMEOUT overrides all forms.
-- Expectation files are read once at config time and snapshotted into the run directory
+- Expectation files are read once when the engine loads the data and snapshotted into the run directory
   (hashed in the manifest) so the oracle cannot change mid-run and generated tests are self-contained.
 - Expectations: exact typed bag equality (NULL = NULL, order ignored unless `ordered`),
   optional absolute float tolerance.

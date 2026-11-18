@@ -1,9 +1,20 @@
 # Changelog
 
-All notable changes to this project are documented here. The project is pre-alpha and
-has no releases yet.
+All notable changes to this project are documented here.
 
-## Unreleased
+## 0.1.0 (not yet published)
+
+First release, as two PyPI distributions: `failslice` (library, CLI, MCP server) and
+`failslice-mcp` (provides the `failslice-mcp` command so `uvx failslice-mcp` works).
+
+- Phase 6: `failslice demo [DIR]` writes the quickstart example without a checkout;
+  `failslice-mcp` validates its budget flags and reports a bad `--root` as a usage error;
+  `explain` wording; a CI job that installs the built wheels outside the checkout and runs
+  the CLI, the demo, the generated test and the MCP server over stdio; a manual release
+  workflow with Trusted Publishing; `server.json` for the MCP Registry; a vhs tape and
+  workflow for the demo GIF; README rewritten as a landing page with absolute links;
+  `CONTRIBUTING.md`, `docs/releasing.md` (ADR 0013). The quickstart generator now quotes
+  its output paths.
 
 - Phase 5: four example scenarios (`tpch_fanout`, `null_not_in`, `date_parse_crash`,
   `latest_tie`) with a driver `examples/run.py` and generated README sections, and

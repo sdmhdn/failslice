@@ -225,7 +225,7 @@ def write_csv(run_dir: Path, spec: RunSpec, deadline: float | None) -> None:
     every statement is bounded by ``deadline``."""
     out = run_dir / CSV_DIR
     out.mkdir(exist_ok=True)
-    raw = duckdb.connect(":memory:")
+    raw = duckdb.connect(":memory:", config={"temp_directory": ""})  # no spill files
     con = DeadlineConnection(raw, deadline)
     try:
         for name, entry in spec.tables.items():

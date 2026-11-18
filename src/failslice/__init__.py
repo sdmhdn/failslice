@@ -12,7 +12,7 @@ Typical use::
 See ``docs/design.md`` for the guarantees and their limits.
 """
 
-__version__ = "0.0.1.dev0"
+__version__ = "0.1.0"
 
 from failslice.api import CheckReport, ReductionResult, check, reduce, validate_predicate, verify
 from failslice.config import ConfigError, Project, load_project

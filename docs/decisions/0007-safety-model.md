@@ -4,7 +4,10 @@
 - Date: 2026-11-15
 
 ## Decision
-- All paths are resolved (including symlinks) and must lie inside an allowed root.
+- All paths are resolved (including symlinks) and must lie inside an allowed root: data
+  and expectation files named in a config, CLI outputs, and every path an MCP client
+  passes. (Refined in Phase 6: the config file the CLI user names, and the `out_dir` a
+  Python caller passes, are the caller's own choice and are not checked.)
 - Predicates are parsed with sqlglot (DuckDB dialect): exactly one SELECT (CTEs allowed);
   reject DDL/DML, COPY, ATTACH, INSTALL/LOAD, PRAGMA, SET, CALL, table functions,
   schema-qualified names, unknown table names, volatile functions.

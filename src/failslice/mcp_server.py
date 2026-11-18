@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import math
 import re
 import threading
 import time
@@ -26,7 +27,7 @@ import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceError
 from mcp.types import CallToolResult, TextContent
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from failslice import __version__
 from failslice.api import (
@@ -196,6 +197,12 @@ class ConfigIn(_In):
     foreign_keys: list[str] = Field(default_factory=list)
     predicate: SqlForm | ExpectForm | RaisesForm
     settings: Settings | None = None
+
+    @field_validator("foreign_keys", mode="before")
+    @classmethod
+    def _empty_foreign_keys(cls, value: Any) -> Any:
+        # Same as failslice.yaml: `foreign_keys:` with no entries (as `init` writes it).
+        return [] if value is None else value
 
 
 # ------------------------------------------------------------------ result models
@@ -1013,21 +1020,72 @@ def create_server(root: str | Path, limits: ServerLimits | None = None) -> MCPSe
     return server
 
 
+def _positive_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an integer") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{text!r} must be at least 1")
+    return value
+
+
+def _positive_seconds(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError(f"{text!r} must be a positive, finite number")
+    return value
+
+
 def main(argv: list[str] | None = None) -> None:
     """Console-script entry point: ``failslice-mcp --root DIR``."""
     parser = argparse.ArgumentParser(
-        prog="failslice-mcp", description="FailSlice MCP server (stdio)."
+        prog="failslice-mcp",
+        description=(
+            "FailSlice MCP server for AI agents (stdio transport). Every path an agent passes "
+            "is resolved inside --root; runs are written to <root>/.failslice/runs/. The "
+            "budget flags are ceilings: an agent may lower them, never raise them."
+        ),
     )
-    parser.add_argument("--root", required=True, help="Directory the server may read and write.")
-    parser.add_argument("--max-evals", type=int, default=ServerLimits.max_evals)
-    parser.add_argument("--wall-clock", type=float, default=ServerLimits.wall_clock_s)
-    parser.add_argument("--eval-timeout", type=float, default=ServerLimits.eval_timeout_s)
+    parser.add_argument(
+        "--root",
+        required=True,
+        help="existing directory the server may read and write (use an absolute path)",
+    )
+    parser.add_argument(
+        "--max-evals",
+        type=_positive_int,
+        default=ServerLimits.max_evals,
+        help="maximum predicate evaluations per reduction (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--wall-clock",
+        type=_positive_seconds,
+        default=ServerLimits.wall_clock_s,
+        help=(
+            "wall-clock budget per reduction in seconds, including replay; finishing the "
+            "artifacts may take a little longer (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
+        "--eval-timeout",
+        type=_positive_seconds,
+        default=ServerLimits.eval_timeout_s,
+        help="maximum seconds per predicate evaluation (default: %(default)s)",
+    )
     parser.add_argument("--version", action="version", version=f"failslice-mcp {__version__}")
     args = parser.parse_args(argv)
     limits = ServerLimits(
         max_evals=args.max_evals, wall_clock_s=args.wall_clock, eval_timeout_s=args.eval_timeout
     )
-    create_server(args.root, limits).run("stdio")
+    try:
+        server = create_server(args.root, limits)
+    except ConfigError as exc:
+        parser.error(str(exc))  # usage error on stderr, exit status 2, no traceback
+    server.run("stdio")
 
 
 if __name__ == "__main__":  # pragma: no cover

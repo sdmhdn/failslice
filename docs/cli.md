@@ -4,6 +4,7 @@
 
 | command | does |
 |---|---|
+| `failslice demo [DIR]` | write the quickstart example (config, generator, 26,001 rows of CSV) into a new directory, default `failslice-demo` |
 | `failslice init [DIR]` | write `failslice.yaml` for a folder, with key suggestions ([details](configuration.md#starting-from-a-folder-failslice-init)) |
 | `failslice check` | validate config and predicate, count input orphans, run the determinism check |
 | `failslice reduce` | reduce, export, replay, then write report, manifest, CSV and the pytest bundle |

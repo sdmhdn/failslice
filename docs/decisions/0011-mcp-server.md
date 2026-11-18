@@ -13,7 +13,8 @@
   `base_dir`, inputs, expectations) is resolved (symlinks followed) and checked inside the
   root before it is opened; glob characters, FIFOs/devices and traversal are refused.
 - One distribution: `uvx --from failslice failslice-mcp`. A separate shim package for a bare
-  `uvx failslice-mcp` is a release decision for Phase 6.
+  `uvx failslice-mcp` is a release decision for Phase 6. *Superseded by ADR 0013: the
+  `failslice-mcp` distribution now provides the command, so `uvx failslice-mcp` works.*
 
 ### Tools
 `inspect_dataset`, `suggest_relationships`, `check_predicate`, `reduce_failure`,
@@ -54,9 +55,10 @@
   writes only the report and manifest, which record the cancellation.
 - When the MCP request is cancelled, the handler sets the flag, keeps the operation slot
   until the worker and child have finished cleanup, then propagates the cancellation.
-- A small `RunHandle` (id, run dir, context, deadline, cancel event, done event, phase) and a
+- *Deferred design idea, not built in 0.1:* a small `RunHandle` (id, run dir, context,
+  deadline, cancel event, done event, phase). Built: a
   shared outcome mapping (termination, candidate state none / checkpoint-only / exported,
-  verification, minimality) serve both CLI and MCP; cancellation is its own termination,
+  verification, minimality) serves both CLI and MCP; cancellation is its own termination,
   distinct from timeouts.
 
 ### Resources and prompt

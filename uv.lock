@@ -8,6 +8,12 @@ resolution-markers = [
     "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
 ]
 
+[manifest]
+members = [
+    "failslice",
+    "failslice-mcp",
+]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.6"
@@ -459,7 +465,9 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "failslice-mcp" },
     { name = "hypothesis" },
+    { name = "jsonschema" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -479,13 +487,26 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "failslice-mcp", editable = "packages/failslice-mcp" },
     { name = "hypothesis", specifier = ">=6.170" },
+    { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "mypy", specifier = ">=2.4" },
     { name = "pytest", specifier = ">=9.2" },
     { name = "pytest-cov", specifier = ">=7.1" },
     { name = "ruff", specifier = ">=0.17.5" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20261113" },
 ]
+
+[[package]]
+name = "failslice-mcp"
+version = "0.1.0"
+source = { editable = "packages/failslice-mcp" }
+dependencies = [
+    { name = "failslice" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "failslice", editable = "." }]
 
 [[package]]
 name = "h11"

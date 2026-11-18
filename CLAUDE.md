@@ -1,6 +1,6 @@
 # FailSlice — repo conventions
 
-Target behaviour (pre-alpha, being built in phases): FailSlice reduces multi-table CSV/Parquet data (loaded into DuckDB) to a small,
+Target behaviour (alpha, 0.1.0 release prep; built in phases): FailSlice reduces multi-table CSV/Parquet data (loaded into DuckDB) to a small,
 FK-consistent subset that still makes a failure predicate TRUE, verifies it in a fresh
 process, and exports artifacts (Parquet/CSV, manifest, report, pytest). CLI `failslice`,
 MCP server `failslice-mcp`. The full brief is

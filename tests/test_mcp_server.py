@@ -191,13 +191,36 @@ def test_busy_and_cancellation(
     assert manifest["status"] == "cancelled" and manifest["failure"] == "cancelled"
 
 
-def test_main_requires_existing_root(tmp_path: Path) -> None:
-    from failslice.config import ConfigError
-
+def test_main_requires_existing_root(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         main([])
-    with pytest.raises(ConfigError, match="not an existing directory"):
+    with pytest.raises(SystemExit) as exc:
         main(["--root", str(tmp_path / "missing")])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "not an existing directory" in err and "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--max-evals", "0"),
+        ("--max-evals", "-1"),
+        ("--max-evals", "x"),
+        ("--wall-clock", "0"),
+        ("--wall-clock", "-5"),
+        ("--wall-clock", "inf"),
+        ("--eval-timeout", "nan"),
+        ("--eval-timeout", "soon"),
+    ],
+)
+def test_main_rejects_bad_budgets(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], flag: str, value: str
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["--root", str(tmp_path), flag, value])
+    assert exc.value.code == 2
+    assert flag in capsys.readouterr().err
 
 
 def test_inspect_suggest_and_lowered_defaults(project: Project) -> None:

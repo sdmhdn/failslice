@@ -151,6 +151,10 @@ def measure(repeat: int) -> dict[str, Any]:
     }
 
 
+# Absolute links: the README is also the PyPI project description.
+BLOB = "https://github.com/sdmhdn/failslice/blob/main"
+
+
 def render(results: dict[str, Any]) -> str:
     env = results["environment"]
     memory = f", {env['memory_gib']} GiB RAM" if env.get("memory_gib") else ""
@@ -164,7 +168,7 @@ def render(results: dict[str, Any]) -> str:
     ]
     for s in results["scenarios"]:
         lines.append(
-            f"| [{s['name']}](examples/{s['example']}/) "
+            f"| [{s['name']}]({BLOB}/examples/{s['example']}/) "
             f"| {s['rows_before']:,} | {s['rows_after']:,} "
             f"| {s['kept']:.4%} | {s['evaluations']:,} | {s['wall_s']:.1f} s | {s['minimality']} |"
         )
@@ -174,7 +178,8 @@ def render(results: dict[str, Any]) -> str:
         f"CPUs{memory}; {env['os']}; Python {env['python']}, DuckDB {env['duckdb']}, FailSlice "
         f"{env['failslice']} at {env['revision']}). Wall time is the median of {results['repeat']} "
         "runs of `reduce(isolate=True)` including the replay and artifacts, without data "
-        "generation; it depends on the machine. [Method](benchmarks/README.md).",
+        "generation; it depends on the machine. "
+        f"[Method]({BLOB}/benchmarks/README.md).",
         END,
     ]
     return "\n".join(lines)

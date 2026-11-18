@@ -64,7 +64,10 @@ failslice init path/to/data          # writes path/to/data/failslice.yaml
 - Every `.csv`, `.parquet` and `.pq` file in the folder (not recursive) becomes a table.
 - Primary and foreign keys are written **commented out, as suggestions**, each with a
   confidence (`high`, `medium`, `low`) and its evidence: rows examined, NULLs, duplicates,
-  matched and unmatched values. Review them and uncomment the correct ones.
+  matched and unmatched values. Review them and uncomment the correct ones: remove the
+  leading `# ` of each `primary_key:` and `- child.col -> parent.col` line you accept. When
+  there are FK suggestions the draft has an empty `foreign_keys:` block (no foreign keys
+  until you uncomment entries under it).
 - Only identifier-like columns are considered (`id`, `<table>_id`, `*_id`, `*_key`,
   `*_code`, `uuid`). A parent key with duplicates is still suggested, with the number of
   duplicated values, because duplicates are often the bug.

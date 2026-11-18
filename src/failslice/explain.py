@@ -79,7 +79,7 @@ class Explanation(_Model):
         """Plain-text rendering (also used in ``report.md``)."""
         lines = ["Observations on the rows that survived reduction (not a diagnosis):", ""]
         for t in self.tables:
-            line = f"- table {t.name}: {t.rows} rows"
+            line = f"- table {t.name}: {_n(t.rows, 'row')}"
             if t.null_counts:
                 nulls = ", ".join(f"{c} ({n})" for c, n in sorted(t.null_counts.items()))
                 line += f"; NULLs in {nulls}"
@@ -87,30 +87,35 @@ class Explanation(_Model):
                 if t.pk_duplicate_values:
                     line += (
                         f"; declared primary key {t.primary_key!r} has "
-                        f"{t.pk_duplicate_values} duplicated value(s) "
-                        f"({t.pk_excess_rows} extra row(s))"
+                        f"{_n(t.pk_duplicate_values, 'duplicated value')} "
+                        f"({_n(t.pk_excess_rows, 'extra row')})"
                     )
                 if t.pk_nulls:
-                    line += f"; {t.pk_nulls} NULL value(s) in {t.primary_key!r}"
+                    line += f"; {_n(t.pk_nulls, 'NULL value')} in {t.primary_key!r}"
             lines.append(line)
         for f in self.foreign_keys:
-            parts = [f"{f.child_rows} child rows", f"{f.join_pairs} join pairs"]
+            parts = [_n(f.child_rows, "child row"), _n(f.join_pairs, "join pair")]
             if f.null_references:
-                parts.append(f"{f.null_references} NULL references")
+                parts.append(_n(f.null_references, "NULL reference"))
             if f.input_orphans:
-                parts.append(f"{f.input_orphans} input orphans (no parent in the input)")
+                parts.append(_n(f.input_orphans, "input orphan") + " (no parent in the input)")
             if f.duplicate_parent_keys:
-                parts.append(f"{f.duplicate_parent_keys} key(s) with more than one parent row")
+                parts.append(_n(f.duplicate_parent_keys, "key") + " with more than one parent row")
             lines.append(f"- {f.fk}: " + ", ".join(parts))
             for k in f.keys:
                 if k.parents > 1 or k.children > 1:
                     lines.append(
-                        f"  - key {k.key}: {k.children} child x {k.parents} parent rows "
-                        f"-> this declared equality join produces {k.pairs} pairs"
+                        f"  - key {k.key}: {k.children} child x {_n(k.parents, 'parent row')} "
+                        f"-> this declared equality join produces {_n(k.pairs, 'pair')}"
                     )
             if f.truncated:
                 lines.append("  - (more keys not shown)")
         return "\n".join(lines) + "\n"
+
+
+def _n(count: int, noun: str) -> str:
+    """``1 row``, ``2 rows``."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
 def _q(name: str) -> str:
@@ -128,7 +133,11 @@ def explain(run_dir: str | Path, *, limit: int = 20, deadline: float | None = No
     spec = RunSpec.read(root)
     raw = duckdb.connect(
         ":memory:",
-        config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
+        config={
+            "autoinstall_known_extensions": False,
+            "autoload_known_extensions": False,
+            "temp_directory": "",
+        },
     )
     con = DeadlineConnection(raw, deadline)
     try:

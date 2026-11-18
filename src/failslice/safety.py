@@ -105,7 +105,7 @@ def volatile_functions() -> frozenset[str]:
     Computed once per process from a fresh in-memory connection.
     """
     names = set(_VOLATILE_FUNCTIONS)
-    con = duckdb.connect(":memory:")
+    con = duckdb.connect(":memory:", config={"temp_directory": ""})
     try:
         rows = con.execute(
             "SELECT function_name, stability, macro_definition FROM duckdb_functions()"

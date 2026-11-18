@@ -22,7 +22,8 @@ ids from Python per evaluation).
   runs in its own supervised child. Atomic checkpoints (initial and
   after each acceptance) let the parent re-load the original files, export the last accepted
   configuration and replay it. Outcomes: verified / unverified candidate / no confirmed candidate.
-- An `Evaluator` protocol keeps a process-pool evaluator (parallel evaluation, roadmap) possible.
+- An `Evaluator` protocol would keep a process-pool evaluator (parallel evaluation,
+  roadmap) possible. *Not built in 0.1; a deferred design idea.*
 
 ## Consequences
 Library users on the in-process default get cooperative timeouts only; this is documented.

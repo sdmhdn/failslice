@@ -1,0 +1,49 @@
+# The `failslice-mcp` distribution only provides the `failslice-mcp` command, so that
+# `uvx failslice-mcp` works; the server itself lives in `failslice` (ADR 0013).
+# Its version always equals failslice's and it pins that exact version (test-enforced).
+[build-system]
+requires = ["hatchling>=1.33"]
+build-backend = "hatchling.build"
+
+[project]
+name = "failslice-mcp"
+version = "0.1.0"
+description = "MCP server for FailSlice: shrink multi-table data to a small, verified reproducer of a data bug."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Saeed Mahdian", email = "saeed.mahdian@gmail.com" }]
+maintainers = [{ name = "Saeed Mahdian", email = "saeed.mahdian@gmail.com" }]
+keywords = ["mcp", "mcp-server", "delta-debugging", "duckdb", "data-quality"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = ["failslice==0.1.0"]
+
+[project.scripts]
+failslice-mcp = "failslice.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/sdmhdn/failslice"
+Documentation = "https://github.com/sdmhdn/failslice/blob/main/docs/mcp.md"
+Source = "https://github.com/sdmhdn/failslice"
+Issues = "https://github.com/sdmhdn/failslice/issues"
+Changelog = "https://github.com/sdmhdn/failslice/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+# No Python code of its own: the wheel carries only metadata and the entry point.
+bypass-selection = true
+
+[tool.uv.sources]
+failslice = { workspace = true }
