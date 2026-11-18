@@ -116,10 +116,10 @@ Each guarantee is enforced in code and covered by tests:
 - same inputs, settings and seed give the same result, unless a run is stopped by its
   wall-clock budget or an evaluation times out;
 - a predicate must be a single read-only `SELECT` (other statements and file-reading
-  functions are rejected); every path in the config and every path given to the CLI or
-  the MCP server stays inside an allowed root (a Python caller chooses its own `out_dir`);
-  DuckDB's external file access is switched off after loading and it never writes spill
-  files.
+  functions are rejected); every data file named in the config, every output path of the
+  CLI and every path an MCP client passes stays inside an allowed root (a Python caller
+  chooses its own `out_dir`); DuckDB's external file access is switched off after loading,
+  and FailSlice's own DuckDB connections never write spill files.
 
 Limits: single-column, acyclic foreign keys; data loaded into memory; in-process runs have
 cooperative timeouts; the predicate must be deterministic.

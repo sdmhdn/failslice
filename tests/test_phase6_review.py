@@ -13,9 +13,13 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 import failslice
+from failslice.config import parse_project
 from failslice.engine import Engine
+from failslice.inference import render_config, suggest_relationships
+from failslice.mcp_server import ConfigIn
 
 PACKAGE = Path(failslice.__file__).parent
 
@@ -88,3 +92,21 @@ def test_expected_file_must_be_a_regular_file(tmp_path: Path, kind: str) -> None
     project = failslice.load_project(tmp_path / "failslice.yaml")
     with pytest.raises(failslice.ConfigError, match="not a regular file"):
         Engine(project)
+
+
+def test_init_draft_is_accepted_by_file_and_inline_mcp_config(tmp_path: Path) -> None:
+    # An agent may turn the YAML that `init` writes into an inline MCP config.
+
+    (tmp_path / "customers.csv").write_text("id\n1\n2\n", encoding="utf-8")
+    (tmp_path / "orders.csv").write_text("order_id,customer_id\n10,1\n11,2\n", encoding="utf-8")
+    report = suggest_relationships(
+        {"customers": tmp_path / "customers.csv", "orders": tmp_path / "orders.csv"},
+        root=tmp_path,
+        base_dir=tmp_path,
+        sample_rows=None,
+    )
+    assert report.foreign_keys  # the draft has the empty `foreign_keys:` block
+    data = yaml.safe_load(render_config(report))
+    assert data["foreign_keys"] is None
+    assert ConfigIn.model_validate(data).foreign_keys == []
+    assert parse_project(data, base_dir=tmp_path).foreign_keys == ()

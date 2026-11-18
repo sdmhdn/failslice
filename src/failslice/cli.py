@@ -224,7 +224,10 @@ def init(
             )
             for w in report.warnings:
                 _err.print(f"warning: {w}")
-            _out.print("next: edit the predicate, then run `failslice check`")
+            check = "failslice check"
+            if target != (Path.cwd() / "failslice.yaml").resolve():
+                check += f" --config {_shell_quote(str(target))}"
+            _out.print(f"next: edit the predicate, then run `{check}`")
 
         _emit(
             "init",
@@ -242,7 +245,9 @@ def init(
 def _shell_quote(text: str) -> str:
     """Quote a path so the printed ``cd`` line can be pasted into the user's shell."""
     if sys.platform == "win32":
-        return f'"{text}"' if any(c in text for c in ' &()^%!;,"') else text
+        # Double quotes work in cmd and PowerShell for ordinary paths; names containing
+        # `%`, `$` or a backtick may still be expanded by the shell.
+        return f'"{text}"'
     return shlex.quote(text)
 
 

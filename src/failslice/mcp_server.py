@@ -27,7 +27,7 @@ import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceError
 from mcp.types import CallToolResult, TextContent
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from failslice import __version__
 from failslice.api import (
@@ -197,6 +197,12 @@ class ConfigIn(_In):
     foreign_keys: list[str] = Field(default_factory=list)
     predicate: SqlForm | ExpectForm | RaisesForm
     settings: Settings | None = None
+
+    @field_validator("foreign_keys", mode="before")
+    @classmethod
+    def _empty_foreign_keys(cls, value: Any) -> Any:
+        # Same as failslice.yaml: `foreign_keys:` with no entries (as `init` writes it).
+        return [] if value is None else value
 
 
 # ------------------------------------------------------------------ result models

@@ -133,3 +133,32 @@ def test_cli_demo_prints_a_pasteable_cd_line(
     assert out.exit_code == 0, out.output
     (line,) = [x.strip() for x in out.stdout.splitlines() if x.strip().startswith("cd ")]
     assert shlex.split(line) == ["cd", str((tmp_path / "it's a demo").resolve())]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows quoting")
+def test_cli_demo_cd_line_is_double_quoted_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    out = CliRunner().invoke(app, ["demo", "it's a demo"])
+    assert out.exit_code == 0, out.output
+    target = (tmp_path / "it's a demo").resolve()
+    assert f'cd "{target}"' in out.stdout
+
+
+def test_init_next_step_names_the_config_outside_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "t.csv").write_text("id\n1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    out = CliRunner().invoke(app, ["init", "data"])
+    assert out.exit_code == 0, out.output
+    assert "failslice check --config" in out.stdout and "failslice.yaml" in out.stdout
+
+    monkeypatch.chdir(data)
+    (data / "failslice.yaml").unlink()
+    out = CliRunner().invoke(app, ["init"])
+    assert out.exit_code == 0, out.output
+    assert "run `failslice check`" in out.stdout
