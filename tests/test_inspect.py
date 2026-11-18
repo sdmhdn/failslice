@@ -154,9 +154,10 @@ def test_sql_clipping_and_lockdown_precede_all_external_reads(tmp_path: Path) ->
             return rows
 
     @contextmanager
-    def connect(database: str) -> Any:
+    def connect(database: str, config: dict[str, Any] | None = None) -> Any:
         opened.append(database)
-        with original_connect(database) as con:
+        assert config == {"temp_directory": ""}  # no spill files
+        with original_connect(database, config=config) as con:
             yield AuditedConnection(con)
 
     before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
