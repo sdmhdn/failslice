@@ -85,7 +85,7 @@ def _replay(root: Path) -> VerificationReport:
     predicate = spec.predicate
     query = predicate.sql if isinstance(predicate, SqlPredicate) else predicate.query
     validate_predicate_sql(query, spec.tables.keys())
-    con = duckdb.connect(":memory:")
+    con = duckdb.connect(":memory:", config={"temp_directory": ""})  # no spill files
     try:
         con.execute("SET enable_progress_bar = false")
         con.execute("CREATE SCHEMA __fs_raw")

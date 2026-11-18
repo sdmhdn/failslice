@@ -9,6 +9,7 @@ error, 130 interrupted. ``--json`` prints exactly one JSON document on stdout.
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 import traceback
 from collections.abc import Callable
@@ -238,6 +239,13 @@ def init(
 
 
 # ----------------------------------------------------------------------------- demo
+def _shell_quote(text: str) -> str:
+    """Quote a path so the printed ``cd`` line can be pasted into the user's shell."""
+    if sys.platform == "win32":
+        return f'"{text}"' if any(c in text for c in ' &()^%!;,"') else text
+    return shlex.quote(text)
+
+
 @app.command()
 def demo(
     directory: Annotated[
@@ -260,7 +268,7 @@ def demo(
             _out.print("  make_data.py     how the data was generated (order 4242 loaded twice)")
             _out.print("  data/generated/  customers, orders, lines: 26,001 rows")
             _out.print("next:")
-            _out.print(f"  cd {result.directory}")
+            _out.print(f"  cd {_shell_quote(str(result.directory))}")
             _out.print("  failslice reduce --out run")
             _out.print("  pytest run/pytest   # the generated test; needs pytest and duckdb")
 

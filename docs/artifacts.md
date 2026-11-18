@@ -24,7 +24,8 @@ inputs (path, sha256, rows; each input is hashed before and after loading), rows
 schemas per table before and after, statistics (completed and started evaluations,
 outcomes, error classes, cache hits, accepted reductions, sweeps, stop reason), status,
 minimality label and detail, the verification report, notes, the status of every
-finalization step, and every file with its size and sha256. Numbers that are unknown
+finalization step, and every file of the run directory with its size and sha256 (except
+`manifest.json` itself and the supervisor's checkpoint). Numbers that are unknown
 (for example after a crashed child) are `null`, never zero.
 
 If the time budget runs out during finalization, the report and the manifest are still

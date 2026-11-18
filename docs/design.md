@@ -127,7 +127,8 @@ parents, so a smallest intact superset is not unique, and re-adding all matches 
 
 **Search.**
 
-1. Units are the kept row ids of one table, in a seeded permutation (`hash(rid, seed)`)
+1. Units are the kept row ids of one table, in a seeded permutation (Python's `random.Random`, seeded from `seed` and the
+   table name, stable across platforms)
    fixed at the start of the run. Cascaded rows are consequences, not units.
 2. A **sweep** visits tables in topological order (parents first, so early deletions
    cascade large chunks). For each table:
@@ -214,8 +215,10 @@ Two matching runs are a screen, not proof; the independent replay is the real ch
 
 ## 8. Evaluator and materialization (ADR 0005)
 
-- Base tables live in `__fs_base`; the names the predicate uses are views in `main` that
-  select the original columns from base via a semi-join with a one-column kept-id table.
+- Base tables live in `__fs_base`; the names the predicate uses are views in `__fs_view`
+  (during reduction: the original columns of the kept rows, via a semi-join with a
+  one-column kept-id table) or `__fs_plain` (all rows, the determinism baseline), selected
+  through DuckDB's `search_path`.
   Internal columns are hidden.
 - Reducer state stays inside DuckDB: `cur_<t>(rid, pos)` with the seeded order; a candidate
   is described by excluded position ranges; cascade repair runs as SQL into `cand_<t>` in
@@ -250,7 +253,10 @@ Two matching runs are a screen, not proof; the independent replay is the real ch
   `eval_timeout_s`. The wall-clock budget covers the whole run including export and replay:
   the reduction gets `wall_clock_s` minus a reserve (10%, at least 10 s, at most half the
   budget), and replay gets whatever time remains (none left ⇒ "unverified"). In isolated
-  runs the total is bounded by `wall_clock_s` plus fixed grace periods (kill, recovery).
+  runs the reduction itself is bounded by `wall_clock_s` plus fixed grace periods (kill,
+  recovery); finalization in the parent runs its SQL under the deadline, but Python-side
+  copies and hashing are not interruptible, so the whole run has no hard bound
+  ([artifacts](artifacts.md)).
 - Per-evaluation timeout is **cooperative**: a watchdog calls `con.interrupt()`; DuckDB stops
   at its next interruption check. The watchdog is joined before the connection is reused.
   If the watchdog fired, or the evaluation took longer than `eval_timeout_s` by a
@@ -259,8 +265,8 @@ Two matching runs are a screen, not proof; the independent replay is the real ch
   In-process, the timeout covers SQL execution only; classifying the result (e.g. the
   user's `raises.match` regex, or a large tolerant comparison) is bounded only in an
   isolated run, where the supervisor kills an evaluation that overruns
-  `eval_timeout_s + grace`. `check()` currently runs in-process; the CLI and MCP server
-  (Phases 3-4) will run checks under the supervisor too.
+  `eval_timeout_s + grace`. `check(isolate=True)`, the CLI and the MCP server run checks
+  under the supervisor too.
 - **Run supervisor:** CLI and MCP (and `reduce(isolate=True)`) run the reduction in a child
   process. The child announces every predicate execution over a pipe with a synchronous
   send *before* it starts (so the parent's count stays exact even if the child dies); the

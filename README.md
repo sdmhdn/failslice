@@ -33,8 +33,8 @@ checked claims:
 
 - the search is **guided by your failure predicate**, a DuckDB SQL query that says "the
   bug is present";
-- removing rows **never creates a dangling reference**; orphans already in your input are
-  kept and recorded;
+- removing rows **never creates a dangling reference**; orphans already in your input
+  are never "repaired", and those that survive are recorded;
 - the result is **replayed in a fresh process** from the exported files only, and called
   `1-minimal (verified)` only when that check really ran;
 - you get a **self-contained pytest test** (only `pytest` and `duckdb` needed) that
@@ -68,12 +68,21 @@ double-counts revenue. `uvx failslice explain run` lists what is special about t
 4242 has two parent rows), and `run/report.md` has the whole story. The generated test
 needs only `pytest` and `duckdb`, not FailSlice.
 
-**Your own data:** `uvx failslice init path/to/folder` writes a starting `failslice.yaml`
-with every table and with key **suggestions**, commented out for you to review; then you
-write the predicate ([predicates](https://github.com/sdmhdn/failslice/blob/main/docs/predicates.md))
-and run `failslice check` and `failslice reduce`. The demo's `failslice.yaml` is a complete
-example. To install instead of using `uvx`: `pip install failslice` (or `uv tool install
-failslice`).
+**Your own data:**
+
+```bash
+cd path/to/your/data
+uvx failslice init               # failslice.yaml with every table and key *suggestions*
+# review the suggestions, write the predicate, then:
+uvx failslice check
+uvx failslice reduce
+```
+
+`init` writes the key suggestions commented out, for you to review; the predicate is a SQL
+query that is TRUE while the bug is present
+([predicates](https://github.com/sdmhdn/failslice/blob/main/docs/predicates.md)). The
+demo's `failslice.yaml` is a complete example. To install instead of using `uvx`:
+`uv tool install failslice` or `pip install failslice`.
 
 ## How it works
 
@@ -98,7 +107,7 @@ Each guarantee is enforced in code and covered by tests:
 
 - a configuration is kept only after a fresh TRUE evaluation (the cache holds negative
   results only);
-- no new dangling references, ever; input orphans are kept as recorded exemptions;
+- no new dangling references, ever; input orphans may survive as recorded exemptions;
 - independent replay from the exported files; `verified` means predicate TRUE and
   integrity intact there;
 - `1-minimal (verified)` only when certification completed, the replay is verified and the
@@ -107,8 +116,10 @@ Each guarantee is enforced in code and covered by tests:
 - same inputs, settings and seed give the same result, unless a run is stopped by its
   wall-clock budget or an evaluation times out;
 - a predicate must be a single read-only `SELECT` (other statements and file-reading
-  functions are rejected); paths stay inside an allowed root; DuckDB's external file
-  access is switched off after loading.
+  functions are rejected); every path in the config and every path given to the CLI or
+  the MCP server stays inside an allowed root (a Python caller chooses its own `out_dir`);
+  DuckDB's external file access is switched off after loading and it never writes spill
+  files.
 
 Limits: single-column, acyclic foreign keys; data loaded into memory; in-process runs have
 cooperative timeouts; the predicate must be deterministic.
@@ -122,8 +133,8 @@ export a test* to MCP clients over stdio. The agent passes paths and SQL, never 
 claude mcp add failslice -- uvx failslice-mcp --root /absolute/path/to/your/data   # Claude Code
 ```
 
-Claude Desktop (`claude_desktop_config.json`) and Cursor (`.cursor/mcp.json`) use the same
-entry:
+Claude Desktop (Settings → Developer → Edit Config opens `claude_desktop_config.json`)
+and Cursor (`.cursor/mcp.json`) use the same entry:
 
 ```json
 {
@@ -136,7 +147,9 @@ entry:
 }
 ```
 
-The server reads files only inside `--root` and writes only under `<root>/.failslice/`.
+Claude Desktop does not read your shell's `PATH`: if it cannot start `uvx`, put the
+absolute path that `which uvx` prints in `command`. The server reads files only inside
+`--root` and writes only under `<root>/.failslice/`.
 `uvx failslice-mcp@latest` picks up a newer release. Tools, resources, budgets and tested
 clients: [MCP server](https://github.com/sdmhdn/failslice/blob/main/docs/mcp.md).
 
@@ -181,7 +194,9 @@ them:
   subsets from a seed record; the subset is not guided by a failure.
 - [SQLancer](https://github.com/sqlancer/sqlancer)'s reducers,
   [sql-reduce](https://github.com/jonamuen/sql-reduce) and
-  [SQLreduce](https://github.com/credativ/sqlreduce) shrink SQL *statements*, not data rows.
+  [SQLreduce](https://github.com/credativ/sqlreduce) shrink SQL scripts and statements
+  (SQLancer's reducer can also drop rows written as `INSERT`s); they do not work on table
+  files with declared foreign keys.
 - RATest (SIGMOD 2019) computes small relational counterexamples for wrong queries, as a
   research prototype.
 
@@ -249,7 +264,7 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 فیل‌اسلایس به این پرسش جواب می‌دهد: «کوچک‌ترین تکه از این جدول‌ها که هنوز همین خطا را می‌سازد چیست؟» ایده‌ها تازه نیستند (delta debugging برای کوچک‌کردن ورودی خراب و زیرمجموعه‌سازی پایگاه داده برای حفظ کلیدهای خارجی)؛ کار ویژهٔ فیل‌اسلایس ترکیب این دو با ادعاهای قابل‌بررسی است:
 
 - جست‌وجو با **گزارهٔ خطای شما** هدایت می‌شود؛ یک کوئری SQL که می‌گوید «باگ هست».
-- حذف ردیف‌ها **هیچ ارجاع شکسته‌ای نمی‌سازد**؛ ردیف‌های یتیمی که از قبل در ورودی بوده‌اند نگه داشته و ثبت می‌شوند.
+- حذف ردیف‌ها **هیچ ارجاع شکسته‌ای نمی‌سازد**؛ ردیف‌های یتیمی که از قبل در ورودی بوده‌اند «تعمیر» نمی‌شوند و آن‌هایی که باقی بمانند ثبت می‌شوند.
 - نتیجه در **پردازه‌ای تازه** و فقط از فایل‌های خروجی دوباره اجرا می‌شود و برچسب `1-minimal (verified)` فقط وقتی داده می‌شود که این بررسی واقعاً انجام شده باشد.
 - خروجی یک **تست pytest مستقل** است (فقط با `pytest` و `duckdb`) که تا وقتی باگ هست پاس می‌شود؛ بعد از اصلاح، با گزینهٔ `--expect passes` آن را به نگهبان برنگشتن باگ تبدیل کنید.
 - با **سرور MCP** (`failslice-mcp`)، یک عامل هوش مصنوعی می‌تواند بدون ریختن میلیون‌ها ردیف در context خودش، از «این فایل‌های من» به «این تست شکست‌خورده» برسد.

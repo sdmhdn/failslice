@@ -55,9 +55,10 @@
   writes only the report and manifest, which record the cancellation.
 - When the MCP request is cancelled, the handler sets the flag, keeps the operation slot
   until the worker and child have finished cleanup, then propagates the cancellation.
-- A small `RunHandle` (id, run dir, context, deadline, cancel event, done event, phase) and a
+- *Deferred design idea, not built in 0.1:* a small `RunHandle` (id, run dir, context,
+  deadline, cancel event, done event, phase). Built: a
   shared outcome mapping (termination, candidate state none / checkpoint-only / exported,
-  verification, minimality) serve both CLI and MCP; cancellation is its own termination,
+  verification, minimality) serves both CLI and MCP; cancellation is its own termination,
   distinct from timeouts.
 
 ### Resources and prompt

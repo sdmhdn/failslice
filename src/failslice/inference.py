@@ -385,7 +385,7 @@ def suggest_relationships(
         for name, path in sorted(tables.items())
     }
     stages = {name: q(f"__fs_inference_{i}") for i, name in enumerate(paths)}
-    with duckdb.connect(":memory:") as con:
+    with duckdb.connect(":memory:", config={"temp_directory": ""}) as con:
         con.execute(f"SET allowed_directories = [{_lit(str(root).rstrip('/') + '/')}]")
         con.execute("SET enable_external_access = false")
         con.execute("SET autoinstall_known_extensions = false")
@@ -500,13 +500,19 @@ def render_config(report: InferenceReport) -> str:
                 lines.append(
                     f"    # primary_key: {column}  # suggestion, {pk.confidence}: {pk.reason}"
                 )
-    lines.extend(["", "foreign_keys: []"])
+    lines.append("")
+    if report.foreign_keys:
+        # An empty block (null, read as no foreign keys): uncommented entries below it
+        # form a valid YAML list.
+        lines.append("foreign_keys:  # uncomment the suggestions you accept")
+    else:
+        lines.append("foreign_keys: []")
     for fk in sorted(
         report.foreign_keys,
         key=lambda fk: (fk.child, fk.child_column, fk.parent, fk.parent_column),
     ):
         lines.append(
-            f"#  - {fk.child}.{fk.child_column} -> {fk.parent}.{fk.parent_column}"
+            f"#   - {fk.child}.{fk.child_column} -> {fk.parent}.{fk.parent_column}"
             f"  # suggestion, {fk.confidence}: {fk.reason}"
         )
     lines.extend(

@@ -66,7 +66,10 @@ timeout; raise it if your client allows.
 ## Tools
 
 Every tool returns `{format, status, data, error, warnings}`; `error` is
-`{code, message, field, retryable}` and the result is marked as an error when it is set.
+`{code, message, field, retryable}`. Only invocation and internal errors (`status:
+"error"`) are marked as MCP tool errors; domain outcomes such as `failed` (for example a
+predicate that is never TRUE) or `replay-failed` are ordinary results that may still
+carry an `error` object explaining them.
 
 | tool | does |
 |---|---|
@@ -113,7 +116,9 @@ Runs are addressed by `run_id` (returned by `reduce_failure`) or `latest`.
 | `failslice://runs/{run_id}/tables/{table}/preview` | first rows of a reduced table, with exact counts |
 
 `{run_id}` may be `latest`: the most recently finished run with a valid manifest. Only
-these artifacts are readable (never through a symlink); there is no generic file reader.
+these artifacts are readable; there is no generic file reader. The manifest and the report
+are refused if they are symlinks; a table preview follows a symlink only to a target
+inside the same run directory.
 
 ## Prompt
 

@@ -10,8 +10,9 @@ MCP Registry) is done only with the maintainer's explicit go-ahead for that step
 ## One-time setup
 
 1. GitHub, Settings → Environments: create `testpypi` and `pypi`, each with the
-   maintainer as required reviewer and "Allow administrators to bypass" off; restrict
-   deployment to tags `v*`.
+   maintainer as required reviewer and "Allow administrators to bypass" off; under
+   "Deployment branches and tags" allow only tags matching `v*`. The release workflow must
+   therefore be dispatched on the tag (below), which it also checks.
 2. TestPyPI and PyPI, "Publishing" → add a **pending publisher** for each project
    (`failslice` and `failslice-mcp`, so four in total): owner `sdmhdn`, repository
    `failslice`, workflow `release.yml`, environment `testpypi` (TestPyPI) or `pypi` (PyPI).
@@ -32,7 +33,7 @@ Record the evidence (links, hashes) in the release notes or the PR.
       jobs (built wheels installed outside the checkout, CLI, demo, generated test, MCP
       over stdio).
 - [ ] Benchmarks regenerated on that code (`uv run python benchmarks/run.py`), and
-      `benchmarks/run.py --check` passes.
+      `uv run python benchmarks/run.py --check` passes.
 - [ ] Example sections current (`uv run python examples/run.py all --check-readme`).
 - [ ] The demo GIF was rendered by the "demo GIF" workflow from this code, reviewed, and
       committed as `docs/assets/demo.gif`.
@@ -48,24 +49,45 @@ Record the evidence (links, hashes) in the release notes or the PR.
 ### TestPyPI (with approval)
 
 - [ ] Push the tag: `git tag -a vX.Y.Z -m "FailSlice X.Y.Z" && git push origin vX.Y.Z`.
-- [ ] Actions → release → Run workflow: version `X.Y.Z`, target `testpypi`; approve the
+- [ ] Dispatch on the tag:
+      `gh workflow run release.yml --ref vX.Y.Z -f version=X.Y.Z -f target=testpypi`
+      (in the web UI: Run workflow, "Use workflow from" → the tag). Approve the
       environment when asked. Keep the `SHA256SUMS` from the build job's log.
-- [ ] Install from TestPyPI in a fresh environment. FailSlice's own packages come from
-      TestPyPI, every dependency from PyPI:
+- [ ] Install from TestPyPI in a fresh directory, with FailSlice's two packages pinned to
+      TestPyPI and every other package from PyPI (a throwaway uv project; uv's per-package
+      `explicit` index guarantees the split):
 
       ```bash
-      uvx --index https://test.pypi.org/simple/ --index-strategy unsafe-best-match \
-          failslice@X.Y.Z demo shop
-      ```
+      mkdir /tmp/fs-testpypi && cd /tmp/fs-testpypi
+      cat > pyproject.toml <<'TOML'
+      [project]
+      name = "fs-testpypi-check"
+      version = "0"
+      requires-python = ">=3.11"
+      dependencies = ["failslice==X.Y.Z", "failslice-mcp==X.Y.Z", "pytest"]
 
-      then the rest of the README quickstart, and `failslice-mcp@X.Y.Z --version` the
-      same way.
+      [[tool.uv.index]]
+      name = "testpypi"
+      url = "https://test.pypi.org/simple/"
+      explicit = true
+
+      [tool.uv.sources]
+      failslice = { index = "testpypi" }
+      failslice-mcp = { index = "testpypi" }
+      TOML
+      uv sync
+      uv run failslice demo shop && cd shop
+      uv run failslice reduce --out run
+      uv run pytest -q run/pytest
+      uv run failslice-mcp --version
+      ```
 - [ ] Check the project pages on test.pypi.org: description renders, links work, the
       Persian section is readable, authors and URLs are right.
 
 ### PyPI (with approval)
 
-- [ ] Run the release workflow again with target `pypi`; approve the environment.
+- [ ] `gh workflow run release.yml --ref vX.Y.Z -f version=X.Y.Z -f target=pypi`;
+      approve the environment.
 - [ ] In a fresh environment: `uvx failslice@X.Y.Z demo shop` and the README quickstart;
       `uvx failslice-mcp@X.Y.Z --version`.
 - [ ] Create the GitHub release for the tag from the CHANGELOG section, attaching

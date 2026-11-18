@@ -124,7 +124,9 @@ class Engine:
         expected_rows: Sequence[Row] | None = None,
     ) -> None:
         self.project = project
-        self.con = duckdb.connect(":memory:")
+        # No spill files: DuckDB would otherwise write to ".tmp" in the working directory,
+        # outside the allowed root (data is held in memory; see "Limits").
+        self.con = duckdb.connect(":memory:", config={"temp_directory": ""})
         self.tables: dict[str, TableInfo] = {}
         self.orphan_counts: dict[str, int] = {}
         self._sizes: dict[str, int] = {}
@@ -237,6 +239,8 @@ class Engine:
         if spec.expected_file is None:
             return None
         path = resolve_inside(self.project.base_dir, spec.expected_file, self.project.root)
+        if not path.is_file():  # also refuses FIFOs and devices, which could block reading
+            raise ConfigError(f"predicate.expected_file is not a regular file: {path}")
         self.expected_file = path
         self.expected_sha256 = file_sha256(path)
         reader = "read_parquet" if path.suffix.lower() in {".parquet", ".pq"} else "read_csv"

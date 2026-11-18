@@ -27,7 +27,7 @@ still makes this failure happen?* Concretely:
 - the search is **guided by your failure predicate**, a DuckDB SQL query that says "the
   bug is present";
 - removing rows **never creates a dangling reference** (orphans already in the input are
-  kept and recorded), so the bug you end up with comes from real data, not from broken
+  never "repaired"; those that survive are recorded), so the bug you end up with comes from real data, not from broken
   references;
 - claims are **checked, not assumed**: the result is replayed in a separate process from
   the exported files only, and it is labelled "1-minimal (verified)" only when that check

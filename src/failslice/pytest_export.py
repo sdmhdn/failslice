@@ -122,7 +122,7 @@ def _predicate_entry(
         }
     assert isinstance(pred, ExpectPredicate)
     if spec.expected_file:
-        raw = duckdb.connect(":memory:")
+        raw = duckdb.connect(":memory:", config={"temp_directory": ""})  # no spill files
         try:
             path = spec.resolve(run_dir, spec.expected_file)
             con = portable.DeadlineConnection(raw, deadline)

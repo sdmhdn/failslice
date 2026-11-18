@@ -691,7 +691,11 @@ def run_bundle(
         return result
     raw = duckdb.connect(
         ":memory:",
-        config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
+        config={
+            "autoinstall_known_extensions": False,
+            "autoload_known_extensions": False,
+            "temp_directory": "",  # no spill files in the working directory
+        },
     )
     con = DeadlineConnection(raw, deadline)
     try:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 from pathlib import Path
 
 import duckdb
@@ -120,3 +122,14 @@ def test_cli_demo_text_names_the_next_steps(
     assert (tmp_path / "failslice-demo" / "failslice.yaml").is_file()
     assert "failslice reduce --out run" in out.stdout
     assert "pytest run/pytest" in out.stdout
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell quoting")
+def test_cli_demo_prints_a_pasteable_cd_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    out = CliRunner().invoke(app, ["demo", "it's a demo"])
+    assert out.exit_code == 0, out.output
+    (line,) = [x.strip() for x in out.stdout.splitlines() if x.strip().startswith("cd ")]
+    assert shlex.split(line) == ["cd", str((tmp_path / "it's a demo").resolve())]

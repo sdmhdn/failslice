@@ -1059,7 +1059,10 @@ def main(argv: list[str] | None = None) -> None:
         "--wall-clock",
         type=_positive_seconds,
         default=ServerLimits.wall_clock_s,
-        help="maximum seconds per reduction (default: %(default)s)",
+        help=(
+            "wall-clock budget per reduction in seconds, including replay; finishing the "
+            "artifacts may take a little longer (default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--eval-timeout",

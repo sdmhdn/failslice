@@ -133,7 +133,11 @@ def explain(run_dir: str | Path, *, limit: int = 20, deadline: float | None = No
     spec = RunSpec.read(root)
     raw = duckdb.connect(
         ":memory:",
-        config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
+        config={
+            "autoinstall_known_extensions": False,
+            "autoload_known_extensions": False,
+            "temp_directory": "",
+        },
     )
     con = DeadlineConnection(raw, deadline)
     try:
