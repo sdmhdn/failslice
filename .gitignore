@@ -24,6 +24,7 @@ htmlcov/
 .failslice/
 failslice-out/
 examples/**/data/generated/
+benchmarks/.work/
 *.duckdb
 *.duckdb.wal
 

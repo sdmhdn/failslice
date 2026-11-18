@@ -194,7 +194,8 @@ unqualified name. Three forms:
   self-consistent queries whose correct value does not depend on the amount of data, e.g.
   `coalesce(joined_total, 0) - coalesce(line_total, 0)` expected `0`.
 - Every outcome carries a **signature**: the boolean, a hash of the canonical result, or
-  `(error class, message)`.
+  `(error class, message)`; for a matching `raises` error, `(concrete class, matched text)`
+  (ADR 0012).
 
 **Determinism check** (in `check` and before every `reduce`): evaluate on the full data
 twice through plain views over the base tables (original columns only, no row-id filter)

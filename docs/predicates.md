@@ -71,6 +71,13 @@ same result signature. Otherwise the run stops (`allow_nondeterministic` downgra
 to a warning and disables the minimality claim). This is a screen, not a proof; the
 independent replay is the real check.
 
+For `raises`, the signature is the concrete error class plus the text your `match` regex
+matched, not the whole message. With several bad values, DuckDB names whichever one it
+reaches first, and that can change between runs; the declared failure stays the same
+([ADR 0012](decisions/0012-examples-and-raises-signature.md),
+[example](../examples/date_parse_crash/)). A regex that matches the varying part (such as
+the bad value itself) is still reported as nondeterministic.
+
 ## What is rejected
 
 The predicate is validated before anything is loaded:

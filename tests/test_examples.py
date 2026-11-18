@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import importlib.util
+import json
+import os
 import runpy
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
+
+import duckdb
+import pytest
 
 import failslice
 
@@ -61,3 +68,101 @@ def test_quickstart_cli(tmp_path: Path) -> None:
         check=False,
     )
     assert tests.returncode == 0, tests.stdout
+
+
+# --------------------------------------------------------------- Phase 5 scenarios
+ROOT = Path(__file__).parents[1]
+
+
+def _load(path: Path, name: str) -> Any:
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+driver = _load(ROOT / "examples" / "run.py", "failslice_examples_driver")
+bench = _load(ROOT / "benchmarks" / "run.py", "failslice_benchmarks_driver")
+RESULTS = json.loads((ROOT / "benchmarks" / "results.json").read_text(encoding="utf-8"))
+
+
+def _copy(name: str, tmp_path: Path) -> Path:
+    work = tmp_path / name
+    shutil.copytree(
+        ROOT / "examples" / name, work, ignore=shutil.ignore_patterns("data", ".failslice")
+    )
+    return work
+
+
+def _tpch_or_skip() -> None:
+    """Provisioning the tpch extension needs network unless it is cached.
+
+    ``FAILSLICE_REQUIRE_TPCH=1`` (set in CI) turns unavailability into a failure.
+    """
+    make_data = runpy.run_path(
+        str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
+    )
+    con = duckdb.connect()
+    try:
+        make_data["load_tpch"](con)
+    except make_data["ExtensionUnavailableError"] as err:
+        if os.environ.get("FAILSLICE_REQUIRE_TPCH") == "1":
+            raise
+        pytest.skip(f"tpch extension unavailable: {err}")
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize("name", driver.NAMES)
+def test_scenario(name: str, tmp_path: Path) -> None:
+    if name == "tpch_fanout":
+        _tpch_or_skip()
+    run = driver.run_example(name, _copy(name, tmp_path))
+    assert run.status == "reduced" and run.verification == "verified" and run.test_passed
+    assert run.minimality == "1-minimal (verified)"
+    # The README's generated section (counts and surviving rows) is what a fresh run gives.
+    assert driver.render(run) == driver.readme_section(ROOT / "examples" / name / "README.md")
+    # The benchmark table's deterministic columns agree with the fresh run.
+    (recorded,) = [s for s in RESULTS["scenarios"] if s["name"] == name]
+    assert (recorded["rows_before"], recorded["rows_after"], recorded["minimality"]) == (
+        run.rows_before,
+        run.rows_after,
+        run.minimality,
+    )
+
+
+def test_quickstart_benchmark_row(tmp_path: Path) -> None:
+    work = tmp_path / "quickstart"
+    shutil.copytree(EXAMPLE, work, ignore=shutil.ignore_patterns("generated", ".failslice"))
+    driver.generate(work)
+    run = driver.reduce_example("quickstart", work)
+    (recorded,) = [s for s in RESULTS["scenarios"] if s["name"] == "quickstart"]
+    assert (recorded["rows_before"], recorded["rows_after"]) == (run.rows_before, run.rows_after)
+
+
+def test_benchmark_table_is_generated() -> None:
+    assert bench.main(["--check"]) == 0
+    for scenario in RESULTS["scenarios"]:
+        assert scenario["minimality"] == "1-minimal (verified)" and scenario["test_passed"]
+
+
+def test_tpch_proxy_settings_and_redaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    make_data = runpy.run_path(
+        str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
+    )
+    err = RuntimeError("Failed to parse http_proxy 'http://user:p%40ss@10.0.0.1:3128'")
+    assert "p%40ss" not in make_data["_redact"](err) and "***@10.0.0.1" in make_data["_redact"](err)
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://us%40er:se%3Acret@proxy.example:3128")
+    con = duckdb.connect()
+    try:
+        make_data["_proxy"](con)  # sets DuckDB options only; no network access
+        settings = con.execute(
+            "SELECT current_setting('http_proxy'), current_setting('http_proxy_username')"
+        ).fetchone()
+        assert settings == ("proxy.example:3128", "us@er")
+    finally:
+        con.close()

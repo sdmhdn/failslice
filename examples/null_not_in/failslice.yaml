@@ -1,0 +1,20 @@
+version: 1
+tables:
+  customers:    { path: data/generated/customers.parquet, primary_key: customer_id }
+  orders:       { path: data/generated/orders.parquet, primary_key: order_id }
+  suppressions: { path: data/generated/suppressions.parquet, primary_key: suppression_id }
+foreign_keys:
+  - orders.customer_id -> customers.customer_id
+  - suppressions.customer_id -> customers.customer_id   # NULL means "no account"
+predicate:
+  # The bug: the NOT IN mailing list disagrees with the intended NOT EXISTS definition.
+  expect:
+    query: |
+      SELECT
+        (SELECT count(*) FROM orders o
+         WHERE NOT EXISTS (SELECT 1 FROM suppressions s WHERE s.customer_id = o.customer_id))
+      - (SELECT count(*) FROM orders o
+         WHERE o.customer_id NOT IN (SELECT customer_id FROM suppressions))
+    expected: 0
+    mode: differs
+settings: { seed: 0 }

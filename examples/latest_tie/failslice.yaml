@@ -1,0 +1,22 @@
+version: 1
+tables:
+  accounts:      { path: data/generated/accounts.parquet, primary_key: account_id }
+  app_events:    { path: data/generated/app_events.parquet, primary_key: event_id }
+  import_events: { path: data/generated/import_events.parquet, primary_key: event_id }
+foreign_keys:
+  - app_events.account_id -> accounts.account_id
+  - import_events.account_id -> accounts.account_id
+predicate:
+  # The bug: "current status per account" returns more than one row for some account.
+  sql: |
+    WITH changes AS (
+      SELECT account_id, status, updated_at FROM app_events
+      UNION ALL
+      SELECT account_id, status, updated_at FROM import_events
+    ), latest AS (
+      SELECT account_id, max(updated_at) AS updated_at FROM changes GROUP BY account_id
+    ), current_status AS (
+      SELECT c.account_id, c.status FROM changes c JOIN latest USING (account_id, updated_at)
+    )
+    SELECT count(*) <> count(DISTINCT account_id) FROM current_status
+settings: { seed: 0 }

@@ -1,0 +1,21 @@
+version: 1
+tables:
+  carriers:  { path: data/generated/carriers.parquet, primary_key: carrier_id }
+  shipments: { path: data/generated/shipments.parquet, primary_key: shipment_id }
+foreign_keys:
+  - shipments.carrier_id -> carriers.carrier_id
+predicate:
+  # The bug: the staging query fails while parsing a shipment time.
+  raises:
+    query: |
+      SELECT c.name,
+             max(CASE c.date_style
+                   WHEN 'iso' THEN CAST(s.shipped_at AS TIMESTAMP)
+                   WHEN 'eu'  THEN strptime(s.shipped_at, '%d/%m/%Y %H:%M')
+                   WHEN 'us'  THEN strptime(s.shipped_at, '%m/%d/%Y %I:%M %p')
+                 END) AS last_shipment
+      FROM shipments s JOIN carriers c USING (carrier_id)
+      GROUP BY c.name
+    match: Could not parse string
+    error_class: InvalidInputException
+settings: { seed: 0 }

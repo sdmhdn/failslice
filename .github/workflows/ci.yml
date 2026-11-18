@@ -46,5 +46,9 @@ jobs:
           python-version: ${{ matrix.python }}
           enable-cache: true
       - run: uv sync --locked
-      # The suite includes the examples (tests/test_examples.py) as smoke tests.
+      # The suite includes the examples (tests/test_examples.py) as smoke tests. The TPC-H
+      # example downloads DuckDB's tpch extension; on Python 3.12 (all three OSes) it must
+      # run, elsewhere it is skipped if the extension cannot be installed.
       - run: uv run pytest --cov --cov-fail-under=90 -q
+        env:
+          FAILSLICE_REQUIRE_TPCH: ${{ matrix.python == '3.12' && '1' || '' }}
