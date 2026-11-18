@@ -54,7 +54,8 @@ def _proxy(con: duckdb.DuckDBPyConnection) -> None:
         # The message would contain the URL, credentials included.
         raise ProvisioningError("the proxy URL in HTTPS_PROXY/HTTP_PROXY is not valid") from None
     if host is None:
-        return
+        # Returning would leave DuckDB to read (and echo) the variable itself.
+        raise ProvisioningError("the proxy URL in HTTPS_PROXY/HTTP_PROXY has no host name")
     con.execute("SET http_proxy = ?", [f"{host}:{port}"])
     if parts.username:
         con.execute("SET http_proxy_username = ?", [unquote(parts.username)])
@@ -64,7 +65,18 @@ def _proxy(con: duckdb.DuckDBPyConnection) -> None:
 
 def _redact(err: BaseException) -> str:
     """Never print proxy credentials that DuckDB may echo in its message."""
-    return re.sub(r"://[^@/\s'\"]+@", "://***@", str(err))
+    text = re.sub(r"//[^\s'\"]*@", "//***@", str(err))  # scheme://user:pass@ (any slashes)
+    return re.sub(r"[^\s'\"/@]+:[^\s'\"/@]*@", "***@", text)  # user:pass@ without a scheme
+
+
+# DuckDB raises IOException for download failures but also for local problems (cache
+# directory, invalid signature). Only these download failures count as "unavailable";
+# everything else must fail loudly, never turn into a skipped test.
+_DOWNLOAD_FAILURE = re.compile(
+    r"Failed to download|Could not establish connection|Could not resolve|"
+    r"Unable to connect|Connection refused|timed out|HTTP|proxy",
+    re.IGNORECASE,
+)
 
 
 def load_tpch(con: duckdb.DuckDBPyConnection) -> None:
@@ -79,16 +91,19 @@ def load_tpch(con: duckdb.DuckDBPyConnection) -> None:
     try:
         _proxy(installer)
         installer.execute("INSTALL tpch")
-    except duckdb.IOException as err:  # includes HTTPException: download not possible
+    except duckdb.Error as err:
+        unavailable = isinstance(err, duckdb.HTTPException) or (
+            isinstance(err, duckdb.IOException) and _DOWNLOAD_FAILURE.search(str(err))
+        )
+        if not unavailable:
+            raise ProvisioningError(
+                f"installing DuckDB's tpch extension failed: {type(err).__name__}: {_redact(err)}"
+            ) from None
         # ``from None``: the original exception may carry proxy credentials.
         raise ExtensionUnavailableError(
             f"cannot install DuckDB's tpch extension ({_redact(err)}). Check network/proxy "
             "access to extensions.duckdb.org, or install a tpch extension file matching your "
             "DuckDB version and platform from a local path (see this file's docstring)."
-        ) from None
-    except duckdb.Error as err:
-        raise ProvisioningError(
-            f"installing DuckDB's tpch extension failed: {type(err).__name__}: {_redact(err)}"
         ) from None
     finally:
         installer.close()

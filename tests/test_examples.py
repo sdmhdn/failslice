@@ -255,7 +255,17 @@ SECRET = "http://user:p%40ss@10.0.0.1:3128"
     ("error", "kind"),
     [
         (duckdb.HTTPException(f"Failed to download via '{SECRET}'"), "ExtensionUnavailableError"),
-        (duckdb.IOException(f"no route to '{SECRET}'"), "ExtensionUnavailableError"),
+        (
+            duckdb.IOException(f"Failed to download extension via '{SECRET}'"),
+            "ExtensionUnavailableError",
+        ),
+        (
+            duckdb.IOException(f"Could not establish connection to '{SECRET}'"),
+            "ExtensionUnavailableError",
+        ),
+        # Local I/O problems are not "unavailable": a cache directory or signature defect.
+        (duckdb.IOException("Failed to create directory '/home/x/.duckdb'"), "ProvisioningError"),
+        (duckdb.IOException("Extension has an invalid signature"), "ProvisioningError"),
         # Anything else is a defect or bad configuration: never a skip.
         (
             duckdb.InvalidInputException(f"Failed to parse http_proxy '{SECRET}'"),
@@ -278,6 +288,7 @@ def test_tpch_provisioning_errors(
             "connect": staticmethod(lambda: _FakeConnection(error)),
             "Error": duckdb.Error,
             "IOException": duckdb.IOException,
+            "HTTPException": duckdb.HTTPException,
         },
     )
     monkeypatch.setitem(load.__globals__, "duckdb", fake)
@@ -290,13 +301,35 @@ def test_tpch_provisioning_errors(
     assert caught.value.__cause__ is None and caught.value.__suppress_context__
 
 
-def test_tpch_invalid_proxy_url_is_not_echoed(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://user:s3cret@proxy.example:notaport",  # invalid port
+        "http:///user:s3cret@proxy.example:3128",  # no host name
+    ],
+)
+def test_tpch_invalid_proxy_url_is_not_echoed(url: str, monkeypatch: pytest.MonkeyPatch) -> None:
     make_data = runpy.run_path(
         str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
     )
     for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("HTTPS_PROXY", "http://user:s3cret@proxy.example:notaport")
+    monkeypatch.setenv("HTTP_PROXY", url)
     with pytest.raises(make_data["ProvisioningError"]) as caught:
         make_data["_proxy"](duckdb.connect())
-    assert "s3cret" not in str(caught.value) and caught.value.__suppress_context__
+    assert "s3cret" not in str(caught.value) and caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "via 'http://user:s3cret@10.0.0.1:3128'",
+        "via 'http:///user:s3cret@proxy.example:3128'",
+        "proxy user:s3cret@10.0.0.1:3128 refused",
+    ],
+)
+def test_redact_hides_credentials(text: str) -> None:
+    make_data = runpy.run_path(
+        str(ROOT / "examples" / "tpch_fanout" / "make_data.py"), run_name="m"
+    )
+    assert "s3cret" not in make_data["_redact"](RuntimeError(text))
