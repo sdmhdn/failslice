@@ -8,8 +8,8 @@ authors:
     email: saeed.mahdian@gmail.com
 license: MIT
 repository-code: "https://github.com/sdmhdn/failslice"
-version: 0.0.1.dev0
-date-released: "2026-11-15"
+version: 0.1.0
+date-released: "2026-11-18"
 keywords:
   - delta debugging
   - test case reduction

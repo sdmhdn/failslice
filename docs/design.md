@@ -36,24 +36,25 @@ flowchart LR
     MCP[MCP server failslice-mcp] --> SUP
 ```
 
-Package layout (`src/failslice/`; the first block exists, the second is planned):
+Package layout (`src/failslice/`):
 
 | Module | Responsibility |
 |---|---|
 | `config.py` | YAML schema (pydantic models), path checks against the allowed root (incl. glob characters), FK graph + cycle detection |
 | `engine.py` | Load files into DuckDB schema `__fs_base`, assign `__fs_rid`, input hashes; views over kept-id tables, cascade repair, negative cache; export of the run directory |
 | `predicate.py` | Predicate execution, timeout watchdog, outcome classification, result/error signatures, typed result comparison |
+| `portable.py` | Outcome classification and comparison shared byte-for-byte with the generated test (ADR 0009) |
 | `safety.py` | sqlglot validation of predicate SQL (ADR 0007) |
 | `reducer.py` | Cascade ddmin sweeps, fixed point, certification pass, budgets, progress events |
 | `supervisor.py` | Child-process runner, checkpoints, hard deadlines, evaluation accounting, recovery |
 | `runspec.py` | The run-directory contract `spec.json` (ADR 0008) |
 | `verify.py` | Independent replay (`python -m failslice.verify` in a fresh process) |
+| `artifacts.py`, `report.py`, `pytest_export.py`, `explain.py` | Manifest, report, CSV, the pytest bundle, observations on surviving rows (ADR 0009, 0010) |
+| `inference.py`, `inspect.py` | PK/FK *suggestions* for `init` / `suggest_relationships`; predicate-free dataset inspection |
+| `cli.py`, `demo.py`, `mcp_server.py` | Typer app (`failslice`), the `demo` command (ADR 0013), MCP server (`failslice-mcp`, ADR 0011) |
 | `api.py` / `__init__.py` | Small public API |
-| *planned:* `manifest.py`, `report.py`, `pytest_export.py`, `explain.py` | Artifacts, test generation, surviving-row explanation (Phase 3) |
-| *planned:* `inference.py` | PK/FK *suggestions* for `init` / `suggest_relationships` |
-| *planned:* `cli.py`, `mcp_server.py` | Typer app (`failslice`), MCP server (`failslice-mcp`) |
 
-Public API (implemented in Phase 2; `export_pytest` and `explain` follow in Phase 3):
+Public API:
 
 ```python
 project = failslice.load_project("failslice.yaml")

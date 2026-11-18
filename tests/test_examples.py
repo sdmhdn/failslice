@@ -70,6 +70,40 @@ def test_quickstart_cli(tmp_path: Path) -> None:
     assert tests.returncode == 0, tests.stdout
 
 
+def test_readme_quickstart(tmp_path: Path) -> None:
+    # The README quickstart (`uvx failslice ...` there; the installed CLI here) and its output.
+    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    for command in (
+        "uvx failslice demo shop",
+        "uvx failslice reduce --out run",
+        "uvx --with duckdb pytest -q run/pytest",
+    ):
+        assert command in readme
+    line = "1-minimal (verified): 26,001 -> 4 rows (0.02%); replay verified"
+    assert line in readme
+
+    cli = [sys.executable, "-m", "failslice.cli"]
+    subprocess.run([*cli, "demo", "shop"], cwd=tmp_path, check=True, capture_output=True)
+    shop = tmp_path / "shop"
+    proc = subprocess.run(
+        [*cli, "reduce", "--out", "run"], cwd=shop, capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert line in proc.stdout
+    explained = subprocess.run(
+        [*cli, "explain", "run"], cwd=shop, capture_output=True, text=True, check=True
+    )
+    assert "key 4242: 1 child x 2 parent rows" in explained.stdout
+    tests = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "run/pytest"],
+        cwd=shop,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert tests.returncode == 0, tests.stdout
+
+
 # --------------------------------------------------------------- Phase 5 scenarios
 ROOT = Path(__file__).parents[1]
 

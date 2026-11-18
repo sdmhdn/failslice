@@ -45,43 +45,55 @@
 
 ## نصب
 
-پروژه هنوز روی PyPI منتشر نشده است و فعلاً از سورس نصب می‌شود. پیش‌نیازها پایتون ۳٫۱۱ یا بالاتر و ابزار [uv](https://docs.astral.sh/uv/) هستند.
+تنها پیش‌نیاز ابزار [uv](https://docs.astral.sh/uv/) است؛ اگر پایتون ۳٫۱۱ یا بالاتر نداشته باشید، خود uv آن را می‌آورد. با `uvx` بدون نصب دائمی اجرا می‌کنید:
 
 ```bash
-git clone https://github.com/sdmhdn/failslice.git
-cd failslice
-uv sync
+uvx failslice --version
 ```
+
+برای نصب دائمی یکی از این دو دستور کافی است:
+
+```bash
+uv tool install failslice     # یا: pip install failslice
+```
+
+فیل‌اسلایس به شکل دو بستهٔ PyPI منتشر می‌شود: بستهٔ `failslice` همه‌چیز را دارد و بستهٔ کوچک `failslice-mcp` فقط فرمان `failslice-mcp` را می‌سازد تا دستور `uvx failslice-mcp` کار کند (ADR 0013). نسخهٔ هر دو بسته همیشه یکی است.
+
+برای توسعه یا اجرای نمونه‌های دیگر، مخزن را کلون کنید و در پوشهٔ آن `uv sync` را بزنید؛ جزئیات در فایل `CONTRIBUTING.md` است.
 
 ## اولین اجرا با نمونهٔ آماده
 
-در پوشهٔ `examples/quickstart` یک نمونهٔ کامل هست: ۱٬۰۰۰ مشتری، ۵٬۰۰۱ سفارش و ۲۰٬۰۰۰ قلم سفارش، که سفارش شمارهٔ ۴۲۴۲ در آن دو بار بارگذاری شده و جمع درآمد را در join زیاد نشان می‌دهد.
+دستور `failslice demo` یک نمونهٔ کامل را در پوشه‌ای تازه می‌سازد: ۱٬۰۰۰ مشتری، ۵٬۰۰۱ سفارش و ۲۰٬۰۰۰ قلم سفارش، که سفارش شمارهٔ ۴۲۴۲ در آن دو بار بارگذاری شده و جمع درآمد را در join زیاد نشان می‌دهد. همین نمونه در پوشهٔ `examples/quickstart` مخزن هم هست و تست‌ها یکسان‌بودن این دو را بررسی می‌کنند.
 
 ```bash
-cd examples/quickstart
-uv run python make_data.py   # ساخت داده در data/generated
-uv run failslice check
-uv run failslice reduce
+uvx failslice demo shop          # ساخت پوشهٔ shop با پیکربندی، اسکریپت داده و فایل‌های CSV
+cd shop
+uvx failslice check              # اختیاری: آیا گزاره روی کل داده همیشه TRUE است؟
+uvx failslice reduce --out run
+uvx --with duckdb pytest -q run/pytest
 ```
 
-خروجی دستور `reduce` (شناسهٔ اجرا و مسیرها در سیستم شما فرق می‌کند):
+خروجی دستور `reduce` (مسیرها در سیستم شما فرق می‌کند):
 
 ```text
 1-minimal (verified): 26,001 -> 4 rows (0.02%); replay verified
-run directory: .../examples/quickstart/.failslice/runs/<run-id>
-  report: .../report.md
-  test:   pytest .../pytest
+run directory: .../shop/run
+  report: .../shop/run/report.md
+  test:   pytest .../shop/run/pytest
 ```
+
+دستور `demo` پوشهٔ موجود را بازنویسی نمی‌کند و اگر ساخت داده نیمه‌کاره بماند، چیزی از آن باقی نمی‌گذارد.
 
 یعنی از ۲۶٬۰۰۱ ردیف فقط ۴ ردیف ماند: یک مشتری، همان سفارش تکراری (دو بار) و یک قلم سفارش. این اعداد را تست `tests/test_examples.py` بررسی می‌کند.
 
 گام‌های بعدی:
 
 ```bash
-uv run failslice explain .failslice/runs/<run-id>     # مشاهده‌ها دربارهٔ ردیف‌های باقی‌مانده
-uv run pytest .failslice/runs/<run-id>/pytest         # اجرای تست تولیدی
-uv run failslice export-test .failslice/runs/<run-id> --out tests/data_bug_4242
+uvx failslice explain run                              # مشاهده‌ها دربارهٔ ردیف‌های باقی‌مانده
+uvx failslice export-test run --out tests/data_bug_4242   # کپی تست در پوشهٔ تست‌های شما
 ```
+
+بدون گزینهٔ `--out`، پوشهٔ اجرا زیر `.failslice/runs/<run-id>` کنار فایل پیکربندی ساخته می‌شود.
 
 خروجی `explain` در این نمونه نشان می‌دهد که کلید ۴۲۴۲ در جدول سفارش‌ها دو ردیف والد دارد و join اعلام‌شده برای آن دو جفت تولید می‌کند. این فقط یک مشاهده است، نه تشخیص علت.
 
@@ -103,7 +115,7 @@ uv run failslice export-test .failslice/runs/<run-id> --out tests/data_bug_4242
 دستور `init` یک فایل پیکربندی اولیه از روی یک پوشه از فایل‌های CSV و Parquet می‌سازد:
 
 ```bash
-uv run failslice init path/to/data
+uvx failslice init path/to/data
 ```
 
 - همهٔ جدول‌ها با مسیرشان فعال نوشته می‌شوند.
@@ -215,6 +227,7 @@ predicate:
 
 ## ابزار خط فرمان
 
+- دستور `failslice demo [DIR]`: ساخت نمونهٔ آماده در پوشه‌ای تازه (پیش‌فرض `failslice-demo`)
 - دستور `failslice init [DIR]`: ساخت فایل پیکربندی با پیشنهاد کلیدها
 - دستور `failslice check`: اعتبارسنجی پیکربندی و گزاره، شمارش یتیم‌ها و بررسی پایداری
 - دستور `failslice reduce`: کوچک‌سازی، خروجی، اجرای مجدد و ساخت گزارش، مانیفست، CSV و تست
@@ -330,15 +343,20 @@ if __name__ == "__main__":
 
 ### راه‌اندازی
 
-دستور اجرا از سورس این است:
+دستور اجرا از PyPI این است (بدون نصب):
 
 ```bash
-uv run --directory /path/to/failslice failslice-mcp --root /absolute/path/to/data
+uvx failslice-mcp --root /absolute/path/to/data
 ```
 
-- گزینهٔ `--root` اجباری است: سرور فقط فایل‌های داخل این پوشه را می‌خواند و فقط زیر `<root>/.failslice/` می‌نویسد.
-- گزینه‌های `--max-evals`، `--wall-clock` و `--eval-timeout` سقف بودجه‌ای را تعیین می‌کنند که عامل می‌تواند درخواست کند.
-- برای Claude Code همین دستور را در فایل `.mcp.json` پروژه، برای Claude Desktop در `claude_desktop_config.json` و برای Cursor در `.cursor/mcp.json` زیر کلید `mcpServers` بنویسید (نمونهٔ کامل در `docs/mcp.md` است). قالب هر سه یکی است، ولی Claude Desktop و Cursor را پروژه آزمایش نکرده است.
+- گزینهٔ `--root` اجباری است و باید پوشه‌ای موجود باشد: سرور فقط فایل‌های داخل این پوشه را می‌خواند و فقط زیر `<root>/.failslice/` می‌نویسد.
+- گزینه‌های `--max-evals`، `--wall-clock` و `--eval-timeout` سقف بودجه‌ای را تعیین می‌کنند که عامل می‌تواند درخواست کند و فقط عدد مثبت می‌پذیرند؛ مقدار نادرست یا ریشهٔ ناموجود با کد خروج ۲ و پیام کوتاه رد می‌شود.
+- در Claude Code کافی است این دستور را بزنید: `claude mcp add failslice -- uvx failslice-mcp --root /absolute/path/to/data`
+- در Claude Desktop (فایل `claude_desktop_config.json`) و Cursor (فایل `.cursor/mcp.json`) زیر کلید `mcpServers` یک ورودی با فرمان `uvx` و آرگومان‌های `failslice-mcp --root ...` بنویسید (نمونهٔ کامل در `docs/mcp.md` است).
+- اگر Claude Desktop فرمان `uvx` را پیدا نکرد، مسیر کامل آن را بدهید (خروجی `which uvx`).
+- برای دریافت نسخهٔ تازه‌تر، به جای `failslice-mcp` بنویسید `failslice-mcp@latest`.
+- در CI، فرمان نصب‌شدهٔ `failslice-mcp` واقعاً اجرا و از راه stdio با کلاینت رسمی MCP آزموده می‌شود؛ Claude Code هم دستی امتحان شده است، ولی Claude Desktop و Cursor را پروژه آزمایش نکرده است.
+- اگر فقط بستهٔ `failslice` را نصب کرده‌اید، سرور با `python -m failslice.mcp_server --root ...` هم اجرا می‌شود.
 
 ### ابزارها
 
@@ -416,7 +434,7 @@ uv run --directory /path/to/failslice failslice-mcp --root /absolute/path/to/dat
 - مرحلهٔ ۳ (مانیفست، گزارش، تولید تست pytest، دستور explain، دستور init و ابزار خط فرمان): انجام شد
 - مرحلهٔ ۴ (سرور MCP برای عامل‌های هوش مصنوعی و امکان لغو اجرا): انجام شد
 - مرحلهٔ ۵ (چهار نمونهٔ واقعی و بنچمارک تولیدشده): انجام شد
-- مرحلهٔ ۶ (آماده‌سازی انتشار): برنامه‌ریزی شده
+- مرحلهٔ ۶ (آماده‌سازی انتشار نسخهٔ 0.1.0): در حال انجام؛ انتشار روی PyPI و ثبت در MCP Registry فقط با تأیید مالک انجام می‌شود
 
 ## تاریخچهٔ این سند
 
@@ -425,3 +443,4 @@ uv run --directory /path/to/failslice failslice-mcp --root /absolute/path/to/dat
 - تاریخ ۲۰۲۶-۱۱-۱۷: افزودن بخش «کار ویژهٔ فیل‌اسلایس»؛ این راهنما از این پس مرجع کامل فارسی است و بخش فارسی README فقط خلاصه و پیوند به آن را دارد
 - تاریخ ۲۰۲۶-۱۱-۱۷: افزودن بخش سرور MCP (مرحلهٔ ۴) و وضعیت `cancelled` برای اجراهای لغوشده
 - تاریخ ۲۰۲۶-۱۱-۱۸: افزودن نمونه‌ها و بنچمارک (مرحلهٔ ۵) و قاعدهٔ تازهٔ تکرارپذیری برای گزارهٔ خطا
+- تاریخ ۲۰۲۶-۱۱-۱۸: آماده‌سازی انتشار (مرحلهٔ ۶): نصب از PyPI، دستور `demo`، بستهٔ `failslice-mcp` و راه‌اندازی MCP با `uvx`

@@ -26,13 +26,15 @@ still makes this failure happen?* Concretely:
 
 - the search is **guided by your failure predicate**, a DuckDB SQL query that says "the
   bug is present";
-- every configuration the predicate sees is **referentially intact**, so the bug you end
-  up with comes from real data, not from broken references;
+- removing rows **never creates a dangling reference** (orphans already in the input are
+  kept and recorded), so the bug you end up with comes from real data, not from broken
+  references;
 - claims are **checked, not assumed**: the result is replayed in a separate process from
   the exported files only, and it is labelled "1-minimal (verified)" only when that check
   really ran;
 - the output is **actionable**: a self-contained pytest bundle (needs only `pytest` and
-  `duckdb`) that documents the bug today and guards against its return after the fix;
+  `duckdb`) that passes while the bug reproduces and, exported with `--expect passes`
+  after your fix, guards against its return;
 - an **MCP server**, so an AI agent can go from "here are my files" to "here is a failing
   test" without loading millions of rows into its context.
 
@@ -49,6 +51,7 @@ smaller reproducer exists.
 | [Command line and Python API](cli.md) | commands, options, exit codes, `--json`, the library API |
 | [Run artifacts](artifacts.md) | the run directory, manifest, report, CSV, `explain`, the generated test, replay |
 | [MCP server](mcp.md) | `failslice-mcp` for AI agents: setup, tools, resources, limits |
-| [Examples](../examples/) and [benchmarks](../benchmarks/README.md) | four bug scenarios with generated results; how the benchmark table is measured |
+| [Examples](../examples/) (`failslice demo` writes the quickstart one) and [benchmarks](../benchmarks/README.md) | four bug scenarios with generated results; how the benchmark table is measured |
+| [Releasing](releasing.md) | how a release is built, checked and published |
 | [Design](design.md) | architecture and the reasoning behind it; decisions in [`decisions/`](decisions/) |
 | [راهنمای فارسی](guide-fa.md) | the complete user guide in Persian |

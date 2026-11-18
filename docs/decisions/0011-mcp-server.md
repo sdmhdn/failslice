@@ -13,7 +13,8 @@
   `base_dir`, inputs, expectations) is resolved (symlinks followed) and checked inside the
   root before it is opened; glob characters, FIFOs/devices and traversal are refused.
 - One distribution: `uvx --from failslice failslice-mcp`. A separate shim package for a bare
-  `uvx failslice-mcp` is a release decision for Phase 6.
+  `uvx failslice-mcp` is a release decision for Phase 6. *Superseded by ADR 0013: the
+  `failslice-mcp` distribution now provides the command, so `uvx failslice-mcp` works.*
 
 ### Tools
 `inspect_dataset`, `suggest_relationships`, `check_predicate`, `reduce_failure`,

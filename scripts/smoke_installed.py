@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+from mcp import Client
+from mcp.client.stdio import StdioServerParameters
+
+import failslice
 
 
 def _script(name: str) -> str:
@@ -51,8 +55,6 @@ def _check(condition: bool, message: str) -> None:
 
 
 def check_not_from_checkout() -> None:
-    import failslice
-
     location = Path(failslice.__file__).resolve()
     _check(
         "site-packages" in location.parts,
@@ -84,9 +86,6 @@ def check_cli(work: Path, version: str) -> None:
 
 
 async def _mcp(work: Path) -> None:
-    from mcp import Client
-    from mcp.client.stdio import StdioServerParameters
-
     root = work / "shop"
     params = StdioServerParameters(command=_script("failslice-mcp"), args=["--root", str(root)])
 
