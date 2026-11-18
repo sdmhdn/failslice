@@ -1,0 +1,44 @@
+name: demo GIF
+
+# Renders docs/demo.tape with vhs from the built wheels and uploads the GIF as an artifact.
+# Manual only; the owner reviews the GIF before it is committed (ADR 0013).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+      - name: Build and install the wheels (no checkout on the import path)
+        run: |
+          uv build --no-sources --out-dir dist
+          uv build --no-sources --package failslice-mcp --out-dir dist
+          uv venv "$RUNNER_TEMP/venv" --python 3.12
+          uv pip install --python "$RUNNER_TEMP/venv" dist/*.whl pytest
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+      - name: Check the commands the tape uses
+        run: |
+          failslice --version
+          pytest --version
+      - uses: charmbracelet/vhs-action@f6d7db07a432fcd3b06772628d36a57f96d95dcf # v2.1.1
+        with:
+          version: v0.12.1
+          path: docs/demo.tape
+      - name: Size check (target <= 3 MiB, refuse > 5 MiB)
+        run: |
+          size=$(stat -c %s docs/assets/demo.gif)
+          echo "demo.gif: $size bytes"
+          test "$size" -le 5242880
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: demo-gif
+          path: docs/assets/demo.gif
+          if-no-files-found: error

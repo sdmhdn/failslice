@@ -1,0 +1,32 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.sdmhdn/failslice",
+  "title": "FailSlice",
+  "description": "Shrink multi-table CSV/Parquet data to a small, FK-consistent, verified reproducer of a data bug.",
+  "repository": {
+    "url": "https://github.com/sdmhdn/failslice",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "failslice-mcp",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "named",
+          "name": "--root",
+          "description": "Absolute path of the directory with your data files; the server reads and writes only inside it.",
+          "format": "filepath",
+          "isRequired": true
+        }
+      ]
+    }
+  ]
+}
