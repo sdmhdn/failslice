@@ -74,13 +74,13 @@ rows across tables:
 | scenario | input rows | output rows | kept | evaluations | wall time | minimality |
 |---|---:|---:|---:|---:|---:|---|
 | [quickstart](examples/quickstart/) | 26,001 | 4 | 0.0154% | 37 | 1.3 s | 1-minimal (verified) |
-| [tpch_fanout](examples/tpch_fanout/) | 76,706 | 6 | 0.0078% | 57 | 2.1 s | 1-minimal (verified) |
-| [tpch_fanout (sf 0.1)](examples/tpch_fanout/) | 765,603 | 6 | 0.0008% | 63 | 4.1 s | 1-minimal (verified) |
-| [null_not_in](examples/null_not_in/) | 6,101 | 3 | 0.0492% | 21 | 1.0 s | 1-minimal (verified) |
-| [date_parse_crash](examples/date_parse_crash/) | 30,007 | 2 | 0.0067% | 31 | 1.0 s | 1-minimal (verified) |
+| [tpch_fanout](examples/tpch_fanout/) | 76,706 | 6 | 0.0078% | 57 | 2.0 s | 1-minimal (verified) |
+| [tpch_fanout (sf 0.1)](examples/tpch_fanout/) | 765,603 | 6 | 0.0008% | 63 | 3.8 s | 1-minimal (verified) |
+| [null_not_in](examples/null_not_in/) | 6,101 | 3 | 0.0492% | 21 | 0.9 s | 1-minimal (verified) |
+| [date_parse_crash](examples/date_parse_crash/) | 30,007 | 2 | 0.0067% | 31 | 0.9 s | 1-minimal (verified) |
 | [latest_tie](examples/latest_tie/) | 11,000 | 3 | 0.0273% | 37 | 1.1 s | 1-minimal (verified) |
 
-Measured 2026-11-18 on one machine (12th Gen Intel(R) Core(TM) i7-1260P, 16 logical CPUs, 7.5 GiB RAM; Linux 6.6.87.2-microsoft-standard-WSL2; Python 3.12.15, DuckDB 2.0.0, FailSlice 0.0.1.dev0 at bc83451). Wall time is the median of 3 runs of `reduce(isolate=True)` including the replay and artifacts, without data generation; it depends on the machine. [Method](benchmarks/README.md).
+Measured 2026-11-18 on one machine (12th Gen Intel(R) Core(TM) i7-1260P, 16 logical CPUs, 7.5 GiB RAM; Linux 6.6.87.2-microsoft-standard-WSL2; Python 3.12.15, DuckDB 2.0.0, FailSlice 0.0.1.dev0 at 1088226). Wall time is the median of 3 runs of `reduce(isolate=True)` including the replay and artifacts, without data generation; it depends on the machine. [Method](benchmarks/README.md).
 <!-- benchmarks:end -->
 
 ## Quickstart
