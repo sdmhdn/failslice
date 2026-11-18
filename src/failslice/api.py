@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as _dt
 import secrets
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -22,10 +24,12 @@ from failslice.reducer import (
     ProgressEvent,
     Reducer,
     ReductionStats,
+    StopReason,
 )
 from failslice.runspec import RunSpec
 from failslice.safety import validate_predicate_sql
 from failslice.supervisor import (
+    CANCELLED,
     SupervisedOutcome,
     run_check_supervised,
     run_supervised,
@@ -61,23 +65,26 @@ class CheckReport:
     outcomes: list[Outcome] = field(default_factory=list)
     deterministic: bool = False
     problems: list[str] = field(default_factory=list)
-    stop: Literal["budget", "killed", "crashed"] | None = None
+    stop: Literal["budget", "killed", "crashed", "cancelled"] | None = None
     """Set when the check did not finish: its budget ran out, or (isolated) it was killed
     at its deadline or crashed."""
 
 
-def check(project: Project, *, isolate: bool = False) -> CheckReport:
+def check(
+    project: Project, *, isolate: bool = False, cancel: threading.Event | None = None
+) -> CheckReport:
     """Validate the predicate, load the data, report FK orphans and run the
     determinism check (the predicate must be TRUE on the full data, four times,
     with identical signatures).
 
     With ``isolate=True`` the check runs in a supervised child process (hard deadline
     ``wall_clock_s``; one evaluation may not exceed ``eval_timeout_s`` plus a grace).
+    Setting ``cancel`` stops the check (in-process: before the next evaluation).
     """
     validate_predicate(project)
     if isolate:
-        return run_check_supervised(project)
-    return check_in_process(project)
+        return run_check_supervised(project, cancel=cancel)
+    return check_in_process(project, cancel=cancel)
 
 
 def check_in_process(
@@ -85,6 +92,7 @@ def check_in_process(
     *,
     before_eval: Callable[[], None] | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> CheckReport:
     """The body of :func:`check` (validation already done). The callbacks let a
     supervisor time every evaluation."""
@@ -103,6 +111,7 @@ def check_in_process(
             Budget(max_evals=4, wall_clock_s=project.settings.wall_clock_s),
             before_eval=before_eval,
             on_progress=on_progress,
+            cancel=cancel,
         )
         try:
             report.outcomes = reducer.check_determinism()
@@ -112,8 +121,12 @@ def check_in_process(
             report.outcomes = exc.outcomes
             report.problems.append(str(exc))
         except BudgetExhaustedError as exc:
-            report.problems.append(f"check stopped by its budget ({exc.reason.value})")
-            report.stop = "budget"
+            if exc.reason is StopReason.CANCELLED:
+                report.problems.append("check cancelled")
+                report.stop = "cancelled"
+            else:
+                report.problems.append(f"check stopped by its budget ({exc.reason.value})")
+                report.stop = "budget"
     finally:
         engine.close()
     return report
@@ -129,7 +142,7 @@ class ReductionResult:
     """
 
     run_dir: Path
-    status: str
+    status: Literal["reduced", "no-candidate", "cancelled"]
     stats: ReductionStats | None
     """Counters of the run; also present for ``no-candidate`` when the run got far
     enough to count anything."""
@@ -137,8 +150,9 @@ class ReductionResult:
     notes: list[str] = field(default_factory=list)
     spec: RunSpec | None = None
     """The exported reproducer's contract (``spec.json``), if one was exported."""
-    failure: Literal["killed", "crashed"] | None = None
-    """Isolated runs: the reduction process was killed (deadline, unresponsive) or crashed."""
+    failure: Literal["killed", "crashed", "cancelled"] | None = None
+    """The run was cancelled by the caller, or (isolated runs) the reduction process was
+    killed (deadline, unresponsive) or crashed."""
     manifest: Manifest | None = None
     """The run summary (``manifest.json``), written last."""
 
@@ -150,8 +164,18 @@ class ReductionResult:
         return minimality_label(self, self.spec)
 
 
+RUN_ID_PATTERN = r"^\d{8}T\d{6}Z-[0-9a-f]{6}$"
+"""Format of generated run ids (also the run directory name)."""
+
+
+def new_run_id() -> str:
+    """A new run id: UTC timestamp plus 6 random hex digits."""
+    return _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
+
+
 def _new_run_dir(project: Project, out_dir: str | Path | None) -> tuple[Path, str]:
-    run_id = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
+    """Create the run directory; the run id is the directory's name."""
+    run_id = new_run_id()
     if out_dir is None:
         # Resolved like every other path, so a symlinked .failslice cannot redirect writes
         # outside the allowed root.
@@ -163,7 +187,7 @@ def _new_run_dir(project: Project, out_dir: str | Path | None) -> tuple[Path, st
     run_dir.mkdir(parents=True, exist_ok=True)
     if any(p.name != ".gitkeep" for p in run_dir.iterdir()):
         raise ConfigError(f"run directory {run_dir} is not empty")
-    return run_dir, run_id
+    return run_dir, run_dir.name
 
 
 def reduce(
@@ -172,6 +196,7 @@ def reduce(
     out_dir: str | Path | None = None,
     isolate: bool = False,
     on_progress: Callable[[ProgressEvent], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> ReductionResult:
     """Reduce the project's data to a smaller configuration that keeps the predicate
     TRUE, export it into a run directory and replay it in a fresh process.
@@ -180,6 +205,10 @@ def reduce(
     :meth:`Project.with_settings` to change them). With ``isolate=True`` the reduction
     runs in a supervised child process with hard deadlines; otherwise in-process,
     where per-evaluation timeouts are cooperative (DuckDB interrupt).
+
+    Setting ``cancel`` stops the run: the child is killed (isolated) or the search stops
+    before its next evaluation (in-process); nothing is recovered, exported further or
+    replayed, and the result has status ``cancelled`` with only the report and manifest.
     """
     validate_predicate(project)
     settings = project.settings
@@ -190,7 +219,7 @@ def reduce(
     budget = Budget(max_evals=settings.max_evals, wall_clock_s=settings.wall_clock_s - reserve)
     notes: list[str] = []
     stats: ReductionStats | None
-    failure: Literal["killed", "crashed"] | None = None
+    failure: Literal["killed", "crashed", "cancelled"] | None = None
     if isolate:
         sup = run_supervised(
             project,
@@ -199,31 +228,66 @@ def reduce(
             budget,
             deadline=deadline - reserve,
             on_progress=on_progress,
+            cancel=cancel,
         )
         stats = _supervised_stats(sup, notes)
-        if sup.killed_reason:
+        if sup.killed_reason == CANCELLED:
+            failure = "cancelled"
+        elif sup.killed_reason:
             failure = "killed"
         elif sup.error:
             failure = "crashed"
     else:
-        stats = _reduce_in_process(project, run_dir, run_id, budget, on_progress)
+        stats = _reduce_in_process(project, run_dir, run_id, budget, on_progress, cancel)
+    if cancel is not None and cancel.is_set():
+        return _cancelled(context, run_dir, stats, notes, deadline, cancel)
     if stats is None or not stats.confirmed:
         notes.append("stopped before any configuration was confirmed TRUE")
         result = ReductionResult(run_dir, "no-candidate", stats, None, notes, failure=failure)
-        result.manifest = finalize(context, result, deadline=deadline)
-        return result
+        return _finish(context, result, deadline, cancel)
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         verification = VerificationReport(
             "unverified", detail="no time left for the independent replay (wall_clock_s)"
         )
     else:
-        verification = verify_in_subprocess(run_dir, timeout_s=remaining)
+        verification = verify_in_subprocess(run_dir, timeout_s=remaining, cancel=cancel)
+    if verification.status == "cancelled":
+        return _cancelled(context, run_dir, stats, notes, deadline, cancel)
     spec = RunSpec.read(run_dir)
     notes.extend(spec.warnings)
     result = ReductionResult(run_dir, "reduced", stats, verification, notes, spec, failure=failure)
-    result.manifest = finalize(context, result, deadline=deadline)
+    return _finish(context, result, deadline, cancel)
+
+
+def _finish(
+    context: RunContext,
+    result: ReductionResult,
+    deadline: float,
+    cancel: threading.Event | None,
+) -> ReductionResult:
+    """Write the artifacts; a cancel that arrives meanwhile turns the outcome into
+    ``cancelled`` (the manifest records the same)."""
+    manifest = finalize(context, result, deadline=deadline, cancel=cancel)
+    if manifest.status == "cancelled" and result.status != "cancelled":
+        result = dataclasses.replace(
+            result, status="cancelled", failure="cancelled", notes=list(manifest.notes)
+        )
+    result.manifest = manifest
     return result
+
+
+def _cancelled(
+    context: RunContext,
+    run_dir: Path,
+    stats: ReductionStats | None,
+    notes: list[str],
+    deadline: float,
+    cancel: threading.Event | None,
+) -> ReductionResult:
+    notes.append("cancelled by the caller: no recovery, replay or further artifacts")
+    result = ReductionResult(run_dir, "cancelled", stats, None, notes, failure="cancelled")
+    return _finish(context, result, deadline, cancel)
 
 
 def _supervised_stats(sup: SupervisedOutcome, notes: list[str]) -> ReductionStats | None:
@@ -248,6 +312,7 @@ def _reduce_in_process(
     run_id: str,
     budget: Budget,
     on_progress: Callable[[ProgressEvent], None] | None,
+    cancel: threading.Event | None = None,
 ) -> ReductionStats:
     engine = Engine(project, allowed_directories=[run_dir])
     try:
@@ -257,13 +322,40 @@ def _reduce_in_process(
             on_progress=on_progress,
             on_accept=lambda eng: write_checkpoint(eng, run_dir, run_id, reducer.snapshot()),
             on_confirmed=lambda eng: write_checkpoint(eng, run_dir, run_id, reducer.snapshot()),
+            cancel=cancel,
         )
         stats = reducer.run(certify=project.settings.minimality)
-        if stats.confirmed:  # never export a configuration not observed TRUE
+        cancelled = cancel is not None and cancel.is_set()
+        if stats.confirmed and not cancelled:  # never export a configuration not observed TRUE
             engine.export(run_dir)
         return stats
     finally:
         engine.close()
+
+
+def classify(result: ReductionResult) -> tuple[str, str]:
+    """The outcome of a finished reduction as ``(status, kind)``, from the recorded reason.
+
+    ``status``: ``reduced`` (verified reproducer), ``cancelled``, ``no-candidate``,
+    ``unverified``, ``replay-failed``, ``integrity-failed``, ``artifact-error`` or ``error``.
+    ``kind`` is the CLI exit class: ``ok``, ``failed``, ``inconclusive``, ``error`` or
+    ``interrupted``. Shared by the CLI and the MCP server.
+    """
+    if result.status == "cancelled":
+        return "cancelled", "interrupted"
+    if result.status == "no-candidate":
+        if result.failure == "crashed":
+            return "error", "error"
+        return "no-candidate", "inconclusive"
+    v = result.verification
+    if v is None or v.status == "unverified":
+        return "unverified", "inconclusive"
+    if not v.ok:
+        return v.status, "failed"
+    m = result.manifest
+    if m is not None and any(st.status == "failed" for st in m.steps):
+        return "artifact-error", "error"
+    return "reduced", "ok"
 
 
 def verify(run_dir: str | Path, *, timeout_s: float = 300.0) -> VerificationReport:

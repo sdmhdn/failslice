@@ -5,6 +5,12 @@ has no releases yet.
 
 ## Unreleased
 
+- Phase 4: MCP server `failslice-mcp` (stdio; tools `inspect_dataset`,
+  `suggest_relationships`, `check_predicate`, `reduce_failure`, `verify_reproducer`,
+  `explain_reproducer`, `export_pytest`; run resources; prompt `debug-data-bug`; ADR 0011),
+  predicate-free dataset inspection, and cancellation through reduce, check, supervisor,
+  recovery, replay and artifacts (status `cancelled`). CI on Linux, macOS and Windows.
+
 - Phase 3: `failslice` CLI (`init`, `check`, `reduce`, `verify`, `export-test`, `explain`)
   with a documented exit-code contract and `--json` (ADR 0010); `manifest.json` (replaces
   `result.json`), `report.md`, CSV copies, `explain` observations, PK/FK suggestions for

@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -28,7 +30,7 @@ from failslice.safety import validate_predicate_sql
 
 __all__ = ["VerificationReport", "verify_in_subprocess", "verify_run_dir"]
 
-Status = Literal["verified", "replay-failed", "integrity-failed", "unverified"]
+Status = Literal["verified", "replay-failed", "integrity-failed", "unverified", "cancelled"]
 
 
 @dataclass
@@ -168,28 +170,66 @@ def _replay(root: Path) -> VerificationReport:
         con.close()
 
 
-def verify_in_subprocess(run_dir: str | Path, *, timeout_s: float) -> VerificationReport:
-    """Run :func:`verify_run_dir` in a fresh Python process with a hard timeout."""
+def verify_in_subprocess(
+    run_dir: str | Path, *, timeout_s: float, cancel: threading.Event | None = None
+) -> VerificationReport:
+    """Run :func:`verify_run_dir` in a fresh Python process with a hard timeout.
+
+    The pipes are drained while waiting (no deadlock on large output); on timeout or when
+    ``cancel`` is set the process is killed and reaped."""
+    if cancel is not None and cancel.is_set():
+        return VerificationReport("cancelled", detail="replay cancelled", process="subprocess")
+    deadline = time.monotonic() + timeout_s
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "failslice.verify", str(run_dir)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    stopped: str | None = None
+    stdout = stderr = ""
     try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "failslice.verify", str(run_dir)],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
+        while True:
+            left = deadline - time.monotonic()
+            try:
+                # Bounded by the time left; communicate() keeps reading both pipes.
+                stdout, stderr = proc.communicate(timeout=max(0.0, min(0.2, left)))
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                break
+            if cancel is not None and cancel.is_set():
+                stopped = "cancelled"
+            elif time.monotonic() >= deadline:
+                stopped = "timeout"
+            if stopped:
+                proc.kill()
+                proc.communicate()  # reap
+                break
+    except BaseException:
+        proc.kill()
+        proc.communicate()
+        raise
+    # A result that arrives after a cancel or past the deadline is not accepted.
+    if stopped is None and cancel is not None and cancel.is_set():
+        stopped = "cancelled"
+    elif stopped is None and time.monotonic() > deadline:
+        stopped = "timeout"
+    if stopped == "cancelled":
+        return VerificationReport("cancelled", detail="replay cancelled", process="subprocess")
+    if stopped == "timeout":
         return VerificationReport(
             "unverified",
             detail=f"replay did not finish within {timeout_s:g}s",
             process="subprocess",
         )
     try:
-        data = json.loads(proc.stdout.strip().splitlines()[-1])
+        data = json.loads(stdout.strip().splitlines()[-1])
     except (IndexError, json.JSONDecodeError):
         return VerificationReport(
             "unverified",
-            detail=f"replay process failed (exit {proc.returncode}): {proc.stderr.strip()[-2000:]}",
+            detail=f"replay process failed (exit {proc.returncode}): {stderr.strip()[-2000:]}",
             process="subprocess",
         )
     data["process"] = "subprocess"

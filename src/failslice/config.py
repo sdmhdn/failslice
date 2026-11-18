@@ -339,7 +339,7 @@ def parse_project(data: Mapping[str, Any], *, base_dir: Path, root: Path | None 
     if not raw.tables:
         raise ConfigError("config must declare at least one table")
     for name in raw.tables:
-        if not _IDENT.match(name):
+        if not _IDENT.fullmatch(name):
             raise ConfigError(f"table name {name!r} must be a plain SQL identifier")
         if name.lower().startswith(RESERVED_PREFIX):
             raise ConfigError(f"table name {name!r} uses the reserved prefix {RESERVED_PREFIX!r}")

@@ -103,7 +103,7 @@ def test_{name}():
 
 
 def _check_name(name: str) -> None:
-    if not _NAME.match(name):
+    if not _NAME.fullmatch(name):
         raise ExportError(f"test name {name!r} must match [a-z_][a-z0-9_]*")
 
 

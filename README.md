@@ -9,8 +9,8 @@ pytest regression test.**
 [English](#english) · [فارسی](#فارسی) · [Documentation](docs/index.md)
 
 > **Status: pre-alpha.** The engine, the `failslice` command line, the run report and
-> manifest, and the generated pytest test work today. The MCP server for AI agents is next
-> (see [Roadmap](#roadmap)). Not published on PyPI yet; install from source.
+> manifest, the generated pytest test and the `failslice-mcp` server for AI agents work
+> today. Not published on PyPI yet; install from source.
 
 <a id="english"></a>
 
@@ -35,8 +35,8 @@ checked claims:
   `1-minimal (verified)` only when that check really ran;
 - you get a **self-contained pytest test** (only `pytest` and `duckdb` needed) that
   documents the bug now and guards against its return after the fix;
-- planned: an **MCP server**, so an AI agent can go from "here are my files" to "here is a
-  failing test" without loading millions of rows into its context.
+- an **MCP server** (`failslice-mcp`), so an AI agent can go from "here are my files" to
+  "here is a failing test" without loading millions of rows into its context.
 
 FailSlice isolates rows; it does not determine the root cause.
 
@@ -130,13 +130,14 @@ cooperative timeouts; the predicate must be deterministic.
 | [Foreign keys and minimality](docs/foreign-keys.md) | semantics, orphans, cascade, what 1-minimal means |
 | [Command line and Python API](docs/cli.md) | commands, options, exit codes, `--json` |
 | [Run artifacts](docs/artifacts.md) | manifest, report, CSV, `explain`, the generated test, replay |
+| [MCP server](docs/mcp.md) | `failslice-mcp` for AI agents: client setup, tools, resources |
 | [Design](docs/design.md) and [decisions](docs/decisions/) | architecture and its reasoning |
 | [راهنمای فارسی](docs/guide-fa.md) | the complete guide in Persian |
 
 ## Roadmap
 
 - **Phase 3 (done):** manifest, report, CSV, generated pytest test, `explain`, `init`, CLI.
-- **Phase 4:** MCP server `failslice-mcp`, so AI agents can run the same loop.
+- **Phase 4 (done):** MCP server `failslice-mcp`, so AI agents can run the same loop.
 - **Phase 5:** realistic example scenarios and generated benchmarks.
 - **Phase 6:** polish, CI on three operating systems, first release.
 
@@ -171,7 +172,7 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 
 **فیل‌اسلایس (FailSlice) یک مجموعه‌دادهٔ چندجدولی را تا چند ردیفی کوچک می‌کند که هنوز باگ داده را نشان می‌دهند، کلیدهای خارجی را سالم نگه می‌دارد، نتیجه را با اجرای مستقل تأیید می‌کند و یک تست رگرسیون pytest آماده تحویل می‌دهد.**
 
-> وضعیت: پیش‌آلفا. موتور اصلی، ابزار خط فرمان، گزارش و مانیفست اجرا و تست pytest تولیدی امروز کار می‌کنند. سرور MCP برای عامل‌های هوش مصنوعی مرحلهٔ بعد است. هنوز روی PyPI منتشر نشده و باید از سورس نصب شود.
+> وضعیت: پیش‌آلفا. موتور اصلی، ابزار خط فرمان، گزارش و مانیفست اجرا، تست pytest تولیدی و سرور MCP (`failslice-mcp`) برای عامل‌های هوش مصنوعی امروز کار می‌کنند. هنوز روی PyPI منتشر نشده و باید از سورس نصب شود.
 
 ### چرا فیل‌اسلایس؟
 
@@ -183,7 +184,7 @@ Created and maintained by Saeed Mahdian ([@sdmhdn](https://github.com/sdmhdn),
 - هر پیکربندی‌ای که گزاره می‌بیند **از نظر کلید خارجی سالم** است.
 - نتیجه در **پردازه‌ای تازه** و فقط از فایل‌های خروجی دوباره اجرا می‌شود و برچسب `1-minimal (verified)` فقط وقتی داده می‌شود که این بررسی واقعاً انجام شده باشد.
 - خروجی یک **تست pytest مستقل** است (فقط با `pytest` و `duckdb`) که امروز باگ را مستند می‌کند و بعد از اصلاح، جلوی برگشتنش را می‌گیرد.
-- در مرحلهٔ بعد، **سرور MCP** اضافه می‌شود تا یک عامل هوش مصنوعی بتواند بدون ریختن میلیون‌ها ردیف در context خودش، از «این فایل‌های من» به «این تست شکست‌خورده» برسد.
+- با **سرور MCP** (`failslice-mcp`)، یک عامل هوش مصنوعی می‌تواند بدون ریختن میلیون‌ها ردیف در context خودش، از «این فایل‌های من» به «این تست شکست‌خورده» برسد.
 
 فیل‌اسلایس ردیف‌ها را جدا می‌کند؛ علت ریشه‌ای را تعیین نمی‌کند.
 

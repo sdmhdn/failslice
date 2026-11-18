@@ -22,7 +22,7 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from typer.exceptions import TyperException
 
 from failslice import __version__
-from failslice.api import CheckReport, ReductionResult, check, reduce, verify
+from failslice.api import CheckReport, ReductionResult, check, classify, reduce, verify
 from failslice.config import ConfigError, Project, load_project, resolve_inside
 from failslice.explain import explain
 from failslice.inference import discover_tables, render_config, suggest_relationships
@@ -298,21 +298,8 @@ def check_cmd(
 
 
 # ---------------------------------------------------------------------------- reduce
-def _reduce_exit(result: ReductionResult) -> tuple[str, str]:
-    """(status, exit kind) for a finished reduction, from the recorded reason."""
-    if result.status == "no-candidate":
-        if result.failure == "crashed":
-            return "error", "error"
-        return "no-candidate", "inconclusive"
-    v = result.verification
-    if v is None or v.status == "unverified":
-        return "unverified", "inconclusive"
-    if not v.ok:
-        return v.status, "failed"
-    m = result.manifest
-    if m is not None and any(st.status == "failed" for st in m.steps):
-        return "artifact-error", "error"
-    return "reduced", "ok"
+_reduce_exit = classify
+"""(status, exit kind) of a finished reduction; shared with the MCP server."""
 
 
 def _result_data(result: ReductionResult) -> dict[str, Any]:

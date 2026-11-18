@@ -58,6 +58,8 @@ __all__ = [
 
 CHECKPOINT = "checkpoint.json"
 DEFAULT_GRACE_S = 5.0
+CANCELLED = "cancelled"
+"""Kill reason when the caller's cancel event was set."""
 RECOVERY_MIN_S = 15.0
 """Time a recovery child always gets (interpreter start, imports, reload, export), even
 right at the deadline; part of the documented fixed graces."""
@@ -259,9 +261,11 @@ def _pump(
     on_event: Callable[[str, Any], bool],
     eval_limit: float | None,
     grace_s: float,
+    cancel: threading.Event | None = None,
 ) -> str | None:
     """Run ``target`` in a spawned child, feeding events to ``on_event`` (which returns
-    True when the child has reported a final result). Returns a kill reason, or None.
+    True when the child has reported a final result). Returns a kill reason (``CANCELLED``
+    when ``cancel`` was set), or None. The child is always killed and reaped on exit.
 
     The deadline loop never blocks on the pipe: a reader thread receives messages, so a
     child that stalls mid-message is still killed on time. ``on_event`` must not block.
@@ -289,6 +293,9 @@ def _pump(
     try:
         while not finished and not eof:
             now = time.monotonic()
+            if cancel is not None and cancel.is_set():
+                kill_reason = CANCELLED
+                break
             if now > deadline:
                 kill_reason = "deadline exceeded"
                 break
@@ -335,6 +342,7 @@ def run_supervised(
     deadline: float | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,
     grace_s: float = DEFAULT_GRACE_S,
+    cancel: threading.Event | None = None,
 ) -> SupervisedOutcome:
     """Run the reduction in a child process under hard deadlines.
 
@@ -387,6 +395,7 @@ def run_supervised(
             on_reduce_event,
             project.settings.eval_timeout_s + grace_s,
             grace_s,
+            cancel,
         )
     finally:
         if dispatcher is not None:
@@ -395,15 +404,21 @@ def run_supervised(
         result.stats is None
         and result.determinism_error is None
         and result.unconfirmed_stats is None
+        and result.killed_reason != CANCELLED  # a cancelled run is not recovered
     ):
-        _recover(project, run_dir, run_id, result, deadline, grace_s)
+        _recover(project, run_dir, run_id, result, deadline, grace_s, cancel)
     if result.stats is None and result.unconfirmed_stats is None and result.sizes_before:
         # Stopped (killed or crashed) before any confirmed configuration: keep what the
         # parent observed. Completed evaluations come from the last progress event.
         lost = ReductionStats(sizes_before=dict(result.sizes_before))
         lost.sizes_after = dict(result.sizes_before)
         lost.evaluations = result.last_progress.evaluations if result.last_progress else 0
-        lost.stop_reason = StopReason.KILLED if result.killed_reason else StopReason.CRASHED
+        if result.killed_reason == CANCELLED:
+            lost.stop_reason = StopReason.CANCELLED
+        elif result.killed_reason:
+            lost.stop_reason = StopReason.KILLED
+        else:
+            lost.stop_reason = StopReason.CRASHED
         lost.complete = False
         lost.elapsed_s = time.monotonic() - start  # as measured by the parent
         lost.minimality_detail = (
@@ -424,7 +439,10 @@ def _recover(
     result: SupervisedOutcome,
     deadline: float,
     grace_s: float,
+    cancel: threading.Event | None = None,
 ) -> None:
+    if cancel is not None and cancel.is_set():
+        return  # a cancelled run is never recovered
     if read_checkpoint(run_dir, run_id) is None:
         return
     result.has_checkpoint = True
@@ -447,7 +465,11 @@ def _recover(
         on_event,
         None,
         grace_s,
+        cancel,
     )
+    if kill == CANCELLED:
+        result.killed_reason = CANCELLED
+        return
     if "sizes" not in recovered:
         reason = f"recovery stopped: {kill}" if kill else "recovery failed"
         result.error = "; ".join(x for x in (result.error, reason) if x)
@@ -489,9 +511,15 @@ def _check_child(project: Project, conn: Connection) -> None:
         conn.close()
 
 
-def run_check_supervised(project: Project, *, grace_s: float = DEFAULT_GRACE_S) -> CheckReport:
+def run_check_supervised(
+    project: Project,
+    *,
+    grace_s: float = DEFAULT_GRACE_S,
+    cancel: threading.Event | None = None,
+) -> CheckReport:
     """Run :func:`failslice.api.check_in_process` in a child process with a hard deadline
-    of ``wall_clock_s + grace_s``. A killed or crashed check is reported as not ok."""
+    of ``wall_clock_s + grace_s``. A killed, cancelled or crashed check is reported as not
+    ok."""
     from failslice.api import CheckReport  # noqa: PLC0415 - api imports this module
 
     got: dict[str, Any] = {}
@@ -502,12 +530,14 @@ def run_check_supervised(project: Project, *, grace_s: float = DEFAULT_GRACE_S) 
 
     deadline = time.monotonic() + project.settings.wall_clock_s + grace_s
     limit = project.settings.eval_timeout_s + grace_s
-    kill = _pump(_check_child, (project,), deadline, on_event, limit, grace_s)
+    kill = _pump(_check_child, (project,), deadline, on_event, limit, grace_s, cancel)
     if "config_error" in got:
         raise ConfigError(got["config_error"])
     if "check" in got:
         report: CheckReport = got["check"]
         return report
+    if kill == CANCELLED:
+        return CheckReport(ok=False, problems=["check cancelled"], stop="cancelled")
     if kill:
         return CheckReport(ok=False, problems=[f"check stopped: {kill}"], stop="killed")
     problem = got.get("crash") or "check process failed"
