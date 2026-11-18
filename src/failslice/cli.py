@@ -1,6 +1,6 @@
 """The ``failslice`` command line (ADR 0010).
 
-Commands: ``init``, ``check``, ``reduce``, ``verify``, ``export-test``, ``explain``.
+Commands: ``init``, ``demo``, ``check``, ``reduce``, ``verify``, ``export-test``, ``explain``.
 Exit codes: 0 success, 1 a check / predicate / replay requirement failed, 2 usage /
 config / safety rejection, 3 inconclusive (budget or deadline), 4 operational or internal
 error, 130 interrupted. ``--json`` prints exactly one JSON document on stdout.
@@ -24,6 +24,7 @@ from typer.exceptions import TyperException
 from failslice import __version__
 from failslice.api import CheckReport, ReductionResult, check, classify, reduce, verify
 from failslice.config import ConfigError, Project, load_project, resolve_inside
+from failslice.demo import DemoError, write_demo
 from failslice.explain import explain
 from failslice.inference import discover_tables, render_config, suggest_relationships
 from failslice.pytest_export import ExportError, build_bundle
@@ -234,6 +235,45 @@ def init(
         )
 
     _guard("init", as_json, debug, body)
+
+
+# ----------------------------------------------------------------------------- demo
+@app.command()
+def demo(
+    directory: Annotated[
+        Path, typer.Argument(help="New directory to create (must not exist).")
+    ] = Path("failslice-demo"),
+    as_json: JsonOpt = False,
+    debug: DebugOpt = False,
+) -> None:
+    """Write the quickstart example (config, data generator and 26,001 rows of data) to DIR."""
+
+    def body() -> NoReturn:
+        try:
+            result = write_demo(directory)
+        except DemoError as exc:
+            raise _Exit("rejected", str(exc), field="directory") from None
+
+        def text() -> None:
+            _out.print(f"wrote the quickstart example to {result.directory}")
+            _out.print("  failslice.yaml   tables, foreign keys and the failure predicate")
+            _out.print("  make_data.py     how the data was generated (order 4242 loaded twice)")
+            _out.print("  data/generated/  customers, orders, lines: 26,001 rows")
+            _out.print("next:")
+            _out.print(f"  cd {result.directory}")
+            _out.print("  failslice reduce --out run")
+            _out.print("  pytest run/pytest   # the generated test; needs pytest and duckdb")
+
+        _emit(
+            "demo",
+            as_json=as_json,
+            status="ok",
+            exit_kind="ok",
+            data={"directory": str(result.directory), "files": [str(f) for f in result.files]},
+            text=text,
+        )
+
+    _guard("demo", as_json, debug, body)
 
 
 # ---------------------------------------------------------------------------- check

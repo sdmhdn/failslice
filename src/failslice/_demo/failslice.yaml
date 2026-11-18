@@ -1,0 +1,14 @@
+version: 1
+tables:
+  customers: { path: data/generated/customers.csv, primary_key: id }
+  orders:    { path: data/generated/orders.csv, primary_key: order_id }
+  lines:     { path: data/generated/lines.csv }
+foreign_keys:
+  - orders.customer_id -> customers.id
+  - lines.order_id -> orders.order_id
+predicate:
+  # The bug: order 4242 was loaded twice, so joining lines to orders double-counts.
+  sql: |
+    SELECT (SELECT sum(l.amount) FROM lines l JOIN orders o USING (order_id))
+        <> (SELECT sum(amount) FROM lines)
+settings: { seed: 0, max_evals: 5000, wall_clock_s: 300 }
