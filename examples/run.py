@@ -46,8 +46,15 @@ class ExampleRun:
     wall_s: float
     test_passed: bool
     run_dir: str
+    test_output: str = ""
+    """The end of the generated test's output when it failed (empty when it passed)."""
     witness: dict[str, dict[str, Any]] = field(default_factory=dict)
     """Per table: ``columns`` and ``rows`` (as text) of the reduced table."""
+
+    @property
+    def ok(self) -> bool:
+        """Reduced, replay verified, and the generated test passed."""
+        return self.status == "reduced" and self.verification == "verified" and self.test_passed
 
     @property
     def rows_before(self) -> int:
@@ -101,6 +108,7 @@ def reduce_example(name: str, directory: Path) -> ExampleRun:
         evaluations=result.stats.evaluations,
         wall_s=round(wall_s, 3),
         test_passed=test.returncode == 0,
+        test_output="" if test.returncode == 0 else (test.stdout + test.stderr)[-4000:],
         run_dir=str(result.run_dir),
         witness=_witness(result.run_dir, list(result.stats.sizes_after)),
     )
@@ -187,13 +195,15 @@ def main(argv: list[str] | None = None) -> int:
     failed = False
     for name in NAMES if args.name == "all" else (args.name,):
         run = run_example(name)
-        ok = run.status == "reduced" and run.verification == "verified" and run.test_passed
+        ok = run.ok
         print(
             f"{name}: {run.minimality}: {run.rows_before:,} -> {run.rows_after:,} rows; "
             f"replay {run.verification}; "
             f"generated test {'passed' if run.test_passed else 'FAILED'}; "
             f"{run.evaluations} evaluations, {run.wall_s:.1f} s\n  run directory: {run.run_dir}"
         )
+        if run.test_output:
+            print(run.test_output, file=sys.stderr)
         failed |= not ok
         readme = EXAMPLES / name / "README.md"
         if args.update_readme:

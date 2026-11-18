@@ -17,8 +17,9 @@ account, its latest app event, and the import event stamped with the same time.
 
 **The fix is a tie-breaker**, e.g. `ORDER BY updated_at DESC, source, event_id` in a
 `row_number()` window. Without a total order, `row_number()` would instead pick one of the
-tied rows arbitrarily; such a nondeterministic query is exactly what FailSlice's
-determinism check refuses to reduce.
+tied rows arbitrarily. FailSlice's determinism check refuses such a query only when its
+four runs actually disagree; it can pick the same row every time, so the check is a screen,
+not a proof.
 
 ## Run it
 

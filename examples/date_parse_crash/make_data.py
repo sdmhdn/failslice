@@ -3,7 +3,8 @@
 The story: each carrier reports shipment times as text in its own documented style
 (``iso``, ``eu`` = day/month, ``us`` = month/day with AM/PM), and the staging query parses
 each row according to its carrier's style. One Globex depot (style ``eu``) started writing
-US-style dates in March; ``03/13/2024`` has no month 13, so the nightly load fails.
+US-style dates in March (``03/13/2024 08:00 AM``); read day-first, there is no month 13,
+so the nightly load fails.
 Three such rows exist; any one of them, with its carrier, is enough to crash the query.
 
 Run from this directory: ``python make_data.py`` (writes ``data/generated/*.parquet``).
@@ -35,9 +36,9 @@ def main(out: Path = Path(__file__).parent / "data" / "generated") -> None:
                                    '%Y-%m-%d %H:%M:%S')
                    END AS shipped_at
             FROM range(30000) r(i)
-            UNION ALL  -- the Globex depot that switched to month/day
+            UNION ALL  -- the Globex depot that switched to the US style
             SELECT 30000 + j, 2,
-                   strftime(TIMESTAMP '2024-03-13 08:00' + INTERVAL (j) DAY, '%m/%d/%Y %H:%M')
+                   strftime(TIMESTAMP '2024-03-13 08:00' + INTERVAL (j) DAY, '%m/%d/%Y %I:%M %p')
             FROM range(3) r(j)"""
         )
         for table in ("carriers", "shipments"):

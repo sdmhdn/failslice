@@ -19,8 +19,10 @@ with more than one offending value could be refused this way.
   match regex matched>`; `detail` keeps the full message. Non-matching errors, the `sql`
   and `expect` forms and timeouts are unchanged.
 - The determinism check therefore means "the declared failure (concrete class and matched
-  text) is stable", not "the same offending row is reached first". A regex that captures
-  the varying part (e.g. the offending value) is still reported as nondeterministic.
+  text) is stable", not "the same offending row is reached first". A regex whose *matched
+  text* includes the varying part (e.g. the offending value) is still reported as
+  nondeterministic; text inside a lookahead or lookbehind is not part of the match and
+  does not count.
 - This narrows only the startup screen's sensitivity to unmatched message text. Every
   accepted candidate still satisfies the declared predicate when evaluated, certification
   still requires every single-row deletion to be not TRUE, and the replay decides from the

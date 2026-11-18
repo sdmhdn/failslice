@@ -100,6 +100,13 @@ def measure(repeat: int) -> dict[str, Any]:
         runs = [examples.reduce_example(name, directory) for _ in range(repeat)]
         first = runs[0]
         for run in runs:
+            if not run.ok:
+                print(run.test_output, file=sys.stderr)
+                raise SystemExit(
+                    f"{label}: run not successful ({run.status}, replay {run.verification}, "
+                    f"generated test {'passed' if run.test_passed else 'failed'}); "
+                    "not recording results"
+                )
             if (run.status, run.minimality, run.sizes_after) != (
                 first.status,
                 first.minimality,

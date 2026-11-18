@@ -28,7 +28,11 @@ TABLES = ("region", "nation", "customer", "orders", "lineitem")
 
 
 class ExtensionUnavailableError(RuntimeError):
-    """The ``tpch`` extension could not be loaded or installed."""
+    """The ``tpch`` extension could not be downloaded (network, proxy or server I/O)."""
+
+
+class ProvisioningError(RuntimeError):
+    """Any other failure while setting up the extension (never treated as "unavailable")."""
 
 
 def _proxy(con: duckdb.DuckDBPyConnection) -> None:
@@ -43,10 +47,15 @@ def _proxy(con: duckdb.DuckDBPyConnection) -> None:
     )
     if url is None:
         return
-    parts = urlsplit(url if "://" in url else f"http://{url}")
-    if parts.hostname is None:
+    try:
+        parts = urlsplit(url if "://" in url else f"http://{url}")
+        host, port = parts.hostname, parts.port or 80
+    except ValueError:
+        # The message would contain the URL, credentials included.
+        raise ProvisioningError("the proxy URL in HTTPS_PROXY/HTTP_PROXY is not valid") from None
+    if host is None:
         return
-    con.execute("SET http_proxy = ?", [f"{parts.hostname}:{parts.port or 80}"])
+    con.execute("SET http_proxy = ?", [f"{host}:{port}"])
     if parts.username:
         con.execute("SET http_proxy_username = ?", [unquote(parts.username)])
     if parts.password:
@@ -70,12 +79,17 @@ def load_tpch(con: duckdb.DuckDBPyConnection) -> None:
     try:
         _proxy(installer)
         installer.execute("INSTALL tpch")
-    except duckdb.Error as err:
+    except duckdb.IOException as err:  # includes HTTPException: download not possible
+        # ``from None``: the original exception may carry proxy credentials.
         raise ExtensionUnavailableError(
             f"cannot install DuckDB's tpch extension ({_redact(err)}). Check network/proxy "
             "access to extensions.duckdb.org, or install a tpch extension file matching your "
             "DuckDB version and platform from a local path (see this file's docstring)."
-        ) from err
+        ) from None
+    except duckdb.Error as err:
+        raise ProvisioningError(
+            f"installing DuckDB's tpch extension failed: {type(err).__name__}: {_redact(err)}"
+        ) from None
     finally:
         installer.close()
     con.execute("LOAD tpch")
@@ -107,5 +121,5 @@ def main(
 if __name__ == "__main__":
     try:
         main()
-    except ExtensionUnavailableError as err:
+    except (ExtensionUnavailableError, ProvisioningError) as err:
         sys.exit(f"error: {err}")

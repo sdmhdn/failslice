@@ -3,7 +3,8 @@
 **The story.** Each carrier reports shipment times as text in its own documented style
 (`iso`, `eu` = day/month, `us` = month/day with AM/PM), and the staging query parses each
 row according to its carrier's style. One Globex depot (style `eu`) started writing
-US-style dates in March. `03/13/2024` has no month 13, so the nightly load fails with
+US-style dates in March (`03/13/2024 08:00 AM`). Read day-first, there is no month 13, so the
+nightly load fails with
 `Could not parse string ...`, naming whichever bad value DuckDB reaches first.
 
 **The data.** 4 carriers and 30,003 shipment events (generated), three of them malformed.
@@ -11,7 +12,7 @@ US-style dates in March. `03/13/2024` has no month 13, so the nightly load fails
 **The predicate** ([`failslice.yaml`](failslice.yaml)): the staging query *raises* an
 `InvalidInputException` matching `Could not parse string`.
 
-**Why a combination.** The text `03/13/2024 08:00` is a valid date for `us` carriers; it
+**Why a combination.** The text `03/13/2024 08:00 AM` is a valid time for `us` carriers; it
 only fails together with its carrier's `eu` style, which comes from the joined `carriers`
 row. Any one of the three malformed shipments is enough; FailSlice keeps one.
 
@@ -51,7 +52,7 @@ Surviving rows:
 
 | shipment_id | carrier_id | shipped_at |
 |---|---|---|
-| 30000 | 2 | 03/13/2024 08:00 |
+| 30000 | 2 | 03/13/2024 08:00 AM |
 <!-- generated:end -->
 
 The row counts above are what this example produces; they are checked by
