@@ -128,12 +128,17 @@ def test_sql_clipping_and_lockdown_precede_all_external_reads(tmp_path: Path) ->
 
         def execute(self, sql: str, parameters: Any = None) -> AuditedConnection:
             if "read_parquet(" in sql:
-                assert self.con.execute(
+                settings = self.con.execute(
                     "SELECT current_setting('autoinstall_known_extensions'), "
                     "current_setting('autoload_known_extensions'), current_setting('threads'), "
                     "current_setting('enable_external_access'), "
                     "current_setting('allowed_directories'), current_setting('temp_directory')"
-                ).fetchone() == (False, False, 1, False, [str(tmp_path) + "/"], "")
+                ).fetchone()
+                assert settings is not None
+                *flags, allowed, temp = settings
+                assert flags == [False, False, 1, False] and temp == ""
+                # DuckDB reports the directory with forward slashes on Windows.
+                assert [Path(d) for d in allowed] == [tmp_path]
             self.preview_query = sql.startswith("SELECT decode(")
             self.con.execute(sql, parameters)
             return self
