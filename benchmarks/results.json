@@ -1,0 +1,119 @@
+{
+  "format": 1,
+  "measured_at": "2026-11-18",
+  "repeat": 3,
+  "environment": {
+    "failslice": "0.0.1.dev0",
+    "revision": "bc83451",
+    "duckdb": "2.0.0",
+    "python": "3.12.15",
+    "os": "Linux 6.6.87.2-microsoft-standard-WSL2",
+    "cpu": "12th Gen Intel(R) Core(TM) i7-1260P",
+    "cpus": 16,
+    "memory_gib": 7.5
+  },
+  "scenarios": [
+    {
+      "name": "quickstart",
+      "example": "quickstart",
+      "rows_before": 26001,
+      "rows_after": 4,
+      "kept": 0.00015384023691396485,
+      "evaluations": 37,
+      "wall_s": 1.272,
+      "wall_s_runs": [
+        1.272,
+        1.26,
+        1.279
+      ],
+      "minimality": "1-minimal (verified)",
+      "verification": "verified",
+      "test_passed": true
+    },
+    {
+      "name": "tpch_fanout",
+      "example": "tpch_fanout",
+      "rows_before": 76706,
+      "rows_after": 6,
+      "kept": 7.822073892524705e-05,
+      "evaluations": 57,
+      "wall_s": 2.093,
+      "wall_s_runs": [
+        2.095,
+        2.093,
+        2.034
+      ],
+      "minimality": "1-minimal (verified)",
+      "verification": "verified",
+      "test_passed": true
+    },
+    {
+      "name": "tpch_fanout (sf 0.1)",
+      "example": "tpch_fanout",
+      "rows_before": 765603,
+      "rows_after": 6,
+      "kept": 7.836959886520821e-06,
+      "evaluations": 63,
+      "wall_s": 4.091,
+      "wall_s_runs": [
+        4.091,
+        4.126,
+        4.067
+      ],
+      "minimality": "1-minimal (verified)",
+      "verification": "verified",
+      "test_passed": true
+    },
+    {
+      "name": "null_not_in",
+      "example": "null_not_in",
+      "rows_before": 6101,
+      "rows_after": 3,
+      "kept": 0.000491722668415014,
+      "evaluations": 21,
+      "wall_s": 1.016,
+      "wall_s_runs": [
+        1.023,
+        1.016,
+        0.951
+      ],
+      "minimality": "1-minimal (verified)",
+      "verification": "verified",
+      "test_passed": true
+    },
+    {
+      "name": "date_parse_crash",
+      "example": "date_parse_crash",
+      "rows_before": 30007,
+      "rows_after": 2,
+      "kept": 6.665111473989403e-05,
+      "evaluations": 31,
+      "wall_s": 0.999,
+      "wall_s_runs": [
+        0.999,
+        1.002,
+        0.972
+      ],
+      "minimality": "1-minimal (verified)",
+      "verification": "verified",
+      "test_passed": true
+    },
+    {
+      "name": "latest_tie",
+      "example": "latest_tie",
+      "rows_before": 11000,
+      "rows_after": 3,
+      "kept": 0.00027272727272727274,
+      "evaluations": 37,
+      "wall_s": 1.112,
+      "wall_s_runs": [
+        1.097,
+        1.125,
+        1.112
+      ],
+      "minimality": "1-minimal (verified)",
+      "verification": "verified",
+      "test_passed": true
+    }
+  ]
+}
